@@ -4,3 +4,6 @@ build:
 
 run:
 	./airport-tracker.exe -addr :8080 -fids-debug
+
+s:
+	git push -u origin main
