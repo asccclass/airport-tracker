@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>桃園國際機場 · 即時起降追蹤</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<style>
+  :root {
+    --bg: #060a12;
+    --panel: #0d1526;
+    --panel-2: #0a1120;
+    --border: #1c2942;
+    --text: #e8edf7;
+    --text-dim: #7c8aa3;
+    --accent: #ffce54;
+    --live: #ff3b3b;
+    --green: #35d07f;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; width: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+    overflow: hidden;
+  }
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  /* ---------- 頂部狀態列 ---------- */
+  #topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 8px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .live-badge {
+    display: flex; align-items: center; gap: 5px;
+    background: var(--live); color: #fff;
+    font-weight: 700; font-size: 11px;
+    padding: 3px 8px; border-radius: 3px;
+    letter-spacing: 0.5px;
+  }
+  .live-badge .blink {
+    width: 6px; height: 6px; border-radius: 50%; background: #fff;
+    animation: blink 1.4s infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.2; } }
+  #airport-name { font-weight: 600; letter-spacing: 0.5px; }
+  #clock { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .sep { width: 1px; height: 14px; background: var(--border); }
+  #conn-status { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
+  #conn-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); }
+  #conn-status.live .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  #conn-status.live { color: var(--green); }
+  #count { margin-left: auto; color: var(--text-dim); }
+  #count b { color: var(--text); font-weight: 600; }
+
+  /* ---------- 地圖 ---------- */
+  #map-wrap { flex: 1; position: relative; min-height: 0; }
+  #map { position: absolute; inset: 0; background: #05070c; }
+
+  .plane-tag {
+    background: rgba(30, 24, 4, 0.88);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 10.5px; line-height: 1.35;
+    color: #ffe9a8;
+    white-space: nowrap;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  }
+  .plane-tag .cs { font-weight: 700; color: var(--accent); }
+  .plane-tag .sub { color: #d8c48a; font-size: 9.5px; }
+
+  .leaflet-popup-content-wrapper {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .leaflet-popup-tip { background: var(--panel); }
+  .popup-row { font-size: 12px; display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; }
+  .popup-row span:first-child { color: var(--text-dim); }
+  .popup-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--accent); }
+
+  /* ---------- 底部 FIDS 起降表 ---------- */
+  #fids {
+    display: flex; flex-shrink: 0;
+    height: 34%; min-height: 190px; max-height: 260px;
+    border-top: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  .fids-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .fids-panel + .fids-panel { border-left: 1px solid var(--border); }
+  .fids-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px;
+    background: var(--panel);
+    font-size: 12px; font-weight: 700; letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .fids-head .arrow-dep { color: var(--accent); }
+  .fids-head .arrow-arr { color: var(--green); }
+  .fids-head .updated { margin-left: auto; font-weight: 400; color: var(--text-dim); font-size: 10.5px; }
+
+  table.fids-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  table.fids-table th {
+    text-align: left; color: var(--text-dim); font-weight: 500;
+    padding: 5px 10px; font-size: 10px; letter-spacing: 0.5px;
+    position: sticky; top: 0; background: var(--panel-2);
+  }
+  table.fids-table td { padding: 5px 10px; border-top: 1px solid var(--border); white-space: nowrap; }
+  .fids-body-wrap { overflow-y: auto; flex: 1; }
+
+  .fids-empty {
+    padding: 22px 16px; text-align: center;
+    color: var(--text-dim); font-size: 12px; line-height: 1.7;
+  }
+  .fids-empty b { color: var(--text); }
+  .fids-empty.hidden { display: none; }
+
+  .status-cancel { color: var(--live); font-weight: 700; }
+  .status-delay { color: var(--accent); font-weight: 600; }
+  .status-normal { color: var(--text-dim); }
+  .sched-old { color: var(--text-dim); text-decoration: line-through; font-size: 10px; display: block; }
+  .sched-new { color: var(--green); font-weight: 600; }
+
+  /* ---------- 塔台通訊/即時影像小工具（衛星地圖區內，限制在地圖範圍、不蓋住上下列） ---------- */
+  .atc-widget {
+    position: absolute; z-index: 900;
+    background: rgba(10, 16, 28, 0.92);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    display: flex; flex-direction: column; gap: 6px;
+    box-shadow: 0 2px 14px rgba(0,0,0,0.6);
+    width: 176px;
+    transition: left 0.25s ease, top 0.25s ease, bottom 0.25s ease,
+                width 0.25s ease, height 0.25s ease, padding 0.25s ease, border-radius 0.25s ease;
+  }
+  #atc-widget-1 { left: 12px; top: 12px; }
+  #atc-widget-2 { right: 12px; bottom: 12px; }
+
+  /* 展開時貼齊地圖區域左邊或右邊（依 dock-left / dock-right），上下滿版；
+     兩個小工具停靠方向不同，所以可以同時展開，不會互相重疊 */
+  .atc-widget.expanded {
+    top: 0;
+    width: 33%;
+    height: 100%;
+    padding: 0;
+  }
+  .atc-widget.expanded.dock-left {
+    left: 0; right: auto; bottom: auto;
+    border-radius: 0 10px 10px 0;
+  }
+  .atc-widget.expanded.dock-right {
+    right: 0; left: auto; bottom: auto;
+    border-radius: 10px 0 0 10px;
+  }
+  .atc-player-wrap {
+    width: 100%; height: 90px;
+    border-radius: 4px; overflow: hidden; flex-shrink: 0;
+    background: #000;
+  }
+  .atc-widget.expanded .atc-player-wrap {
+    flex: 1 1 auto; height: 100%; width: 100%;
+    border-radius: inherit;
+  }
+
+  /* 縮小狀態：控制按鈕正常排在影像下方 */
+  .atc-controls { display: flex; gap: 6px; }
+  .atc-controls button {
+    flex: 1;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 5px 6px; font-size: 11px; cursor: pointer;
+    white-space: nowrap;
+  }
+  .atc-controls button:hover { border-color: var(--accent); }
+  .atc-audio-toggle.on { color: var(--green); border-color: var(--green); }
+
+  .atc-credit { font-size: 9px; color: var(--text-dim); text-align: center; }
+  .atc-credit a { color: var(--text-dim); }
+
+  /* 展開狀態：只留影像，控制按鈕變成浮在影像右上角的小圖示、不佔版面，字幕列隱藏 */
+  .atc-widget.expanded .atc-credit { display: none; }
+  .atc-widget.expanded .atc-controls {
+    position: absolute; top: 8px; right: 8px; z-index: 2;
+    gap: 4px;
+    background: transparent;
+  }
+  .atc-widget.expanded .atc-controls button {
+    flex: none;
+    padding: 5px 7px; font-size: 10px;
+    background: rgba(10, 16, 28, 0.75);
+    backdrop-filter: blur(2px);
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="topbar">
+    <div class="live-badge"><span class="blink"></span>LIVE</div>
+    <div id="airport-name">桃園國際機場 · TPE / RCTP</div>
+    <div class="sep"></div>
+    <div id="clock">--:--:--</div>
+    <div class="sep"></div>
+    <div id="conn-status"><span class="dot"></span><span id="conn-text">連線中…</span></div>
+    <div id="count">空域內飛機：<b id="count-num">–</b></div>
+  </div>
+
+  <div id="map-wrap">
+    <div id="map"></div>
+
+    <div id="atc-widget-1" class="atc-widget dock-left" data-video-id="My-tDEttvXg">
+      <div class="atc-player-wrap"><div class="atc-player-mount"></div></div>
+      <div class="atc-controls">
+        <button class="atc-audio-toggle">🔇 開聲音</button>
+        <button class="atc-size-toggle">⤢ 放大</button>
+      </div>
+      <div class="atc-credit">北跑道塔台通訊 · 音源 <a href="https://www.youtube.com/@TWSkyWave" target="_blank" rel="noopener">TWSkyWave 空中電波</a></div>
+    </div>
+
+    <div id="atc-widget-2" class="atc-widget dock-right" data-video-id="91PfFoqvuUk">
+      <div class="atc-player-wrap"><div class="atc-player-mount"></div></div>
+      <div class="atc-controls">
+        <button class="atc-audio-toggle">🔇 開聲音</button>
+        <button class="atc-size-toggle">⤢ 放大</button>
+      </div>
+      <div class="atc-credit">機場即時影像 · <a href="https://www.youtube.com/watch?v=91PfFoqvuUk" target="_blank" rel="noopener">YouTube Live</a></div>
+    </div>
+  </div>
+
+  <div id="fids">
+    <div class="fids-panel">
+      <div class="fids-head"><span class="arrow-dep">&#9650; DEPARTURES</span><span class="updated" id="dep-updated"></span></div>
+      <div class="fids-body-wrap">
+        <table class="fids-table">
+          <thead><tr><th>班號</th><th>表定</th><th>目的地</th><th>航廈</th><th>登機門</th><th>狀態</th></tr></thead>
+          <tbody id="dep-body"></tbody>
+        </table>
+        <div class="fids-empty" id="dep-empty">
+          <b>正在載入桃園機場官方起降資料…</b><br>
+          若持續沒有資料，可能是官方資料源格式異動或連線失敗，請查看伺服器終端機的 log。
+        </div>
+      </div>
+    </div>
+    <div class="fids-panel">
+      <div class="fids-head"><span class="arrow-arr">&#9660; ARRIVALS</span><span class="updated" id="arr-updated"></span></div>
+      <div class="fids-body-wrap">
+        <table class="fids-table">
+          <thead><tr><th>班號</th><th>表定</th><th>起飛地</th><th>航廈</th><th>行李轉盤</th><th>狀態</th></tr></thead>
+          <tbody id="arr-body"></tbody>
+        </table>
+        <div class="fids-empty" id="arr-empty">
+          <b>正在載入桃園機場官方起降資料…</b><br>
+          若持續沒有資料，可能是官方資料源格式異動或連線失敗，請查看伺服器終端機的 log。
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ---------- 地圖：改用衛星影像底圖，貼近空拍視角 ---------- */
+const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([25.077, 121.233], 12);
+L.control.zoom({ position: 'topright' }).addTo(map); // 縮放按鈕移到右上角，避開左上角的塔台通訊小工具
+
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19,
+}).addTo(map);
+// 疊一層淡淡的地名圖層，方便辨認方位（純衛星影像常常看不出地名）
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19, opacity: 0.0,
+}).addTo(map);
+
+const markers = new Map(); // icao24 -> marker
+
+function fmtAlt(m) {
+  if (m == null) return '–';
+  return Math.round(m * 3.28084).toLocaleString() + 'ft';
+}
+function fmtSpeed(mps) {
+  if (mps == null) return '–';
+  return Math.round(mps * 1.94384) + 'kt';
+}
+
+function tagIcon(ac) {
+  const label = ac.callsign || ac.icao24;
+  const sub = `${fmtAlt(ac.baro_altitude)} ${fmtSpeed(ac.velocity)}`;
+  return L.divIcon({
+    className: '',
+    html: `<div class="plane-tag"><span class="cs">${label}</span><br><span class="sub">${sub}</span></div>`,
+    iconSize: null,
+    iconAnchor: [-6, 8],
+  });
+}
+
+function popupHtml(ac) {
+  const label = ac.callsign || ac.icao24;
+  return `
+    <div class="popup-title">${label}</div>
+    <div class="popup-row"><span>國籍</span><span>${ac.origin_country || '–'}</span></div>
+    <div class="popup-row"><span>高度</span><span>${fmtAlt(ac.baro_altitude)}</span></div>
+    <div class="popup-row"><span>地速</span><span>${fmtSpeed(ac.velocity)}</span></div>
+    <div class="popup-row"><span>狀態</span><span>${ac.on_ground ? '地面' : '飛行中'}</span></div>
+  `;
+}
+
+function upsertAircraft(ac) {
+  if (ac.latitude == null || ac.longitude == null) return;
+  let marker = markers.get(ac.icao24);
+  if (!marker) {
+    marker = L.marker([ac.latitude, ac.longitude], { icon: tagIcon(ac) })
+      .bindPopup(popupHtml(ac))
+      .addTo(map);
+    markers.set(ac.icao24, marker);
+  } else {
+    marker.setLatLng([ac.latitude, ac.longitude]);
+    marker.setIcon(tagIcon(ac));
+    marker.setPopupContent(popupHtml(ac));
+  }
+}
+
+function applySnapshot(snapshot) {
+  const seen = new Set();
+  for (const ac of snapshot.aircraft) {
+    seen.add(ac.icao24);
+    upsertAircraft(ac);
+  }
+  for (const [icao24, marker] of markers) {
+    if (!seen.has(icao24)) {
+      map.removeLayer(marker);
+      markers.delete(icao24);
+    }
+  }
+  document.getElementById('count-num').textContent = snapshot.aircraft.length;
+}
+
+/* ---------- 連線狀態 ---------- */
+function setStatus(live, text) {
+  const el = document.getElementById('conn-status');
+  el.classList.toggle('live', live);
+  document.getElementById('conn-text').textContent = text;
+}
+
+function connect() {
+  const es = new EventSource('/api/stream');
+  es.addEventListener('snapshot', (e) => {
+    try {
+      applySnapshot(JSON.parse(e.data));
+      setStatus(true, '即時更新中');
+    } catch (err) {
+      console.error('解析資料失敗', err);
+    }
+  });
+  es.onerror = () => setStatus(false, '連線中斷，重試中…');
+  es.onopen = () => setStatus(true, '即時更新中');
+}
+connect();
+
+/* ---------- FIDS 起降時刻表 ---------- */
+function escapeHtml(s) {
+  return (s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function schedCell(rec) {
+  // 表定時間跟預計時間不同就用刪除線+綠字表示變動（跟原本畫面的呈現方式一致）
+  if (rec.est_time && rec.sched_time && rec.est_time !== rec.sched_time) {
+    return `<span class="sched-old">${escapeHtml(rec.sched_time)}</span><span class="sched-new">${escapeHtml(rec.est_time)}</span>`;
+  }
+  return escapeHtml(rec.sched_time || rec.est_time || '–');
+}
+
+function statusClass(status) {
+  const s = status || '';
+  if (s.includes('取消') || s.toUpperCase().includes('CANCEL')) return 'status-cancel';
+  if (s.includes('延誤') || s.toUpperCase().includes('DELAY')) return 'status-delay';
+  return 'status-normal';
+}
+
+function renderFidsRows(tbodyId, emptyId, records, thirdColKey) {
+  const tbody = document.getElementById(tbodyId);
+  const empty = document.getElementById(emptyId);
+
+  if (!records || records.length === 0) {
+    tbody.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+
+  tbody.innerHTML = records.map((r) => `
+    <tr>
+      <td>${escapeHtml(r.flight_no)}</td>
+      <td>${schedCell(r)}</td>
+      <td>${escapeHtml(r.place_zh)}</td>
+      <td>${escapeHtml(r.terminal)}</td>
+      <td>${escapeHtml(thirdColKey === 'gate' ? r.gate : r.baggage)}</td>
+      <td class="${statusClass(r.status_zh)}">${escapeHtml(r.status_zh)}</td>
+    </tr>
+  `).join('');
+}
+
+function fmtUpdatedAt(iso) {
+  try {
+    const d = new Date(iso);
+    const fmt = new Intl.DateTimeFormat('zh-TW', {
+      timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    return '更新於 ' + fmt.format(d);
+  } catch { return ''; }
+}
+
+function applyFidsSnapshot(snapshot) {
+  renderFidsRows('dep-body', 'dep-empty', snapshot.departures, 'gate');
+  renderFidsRows('arr-body', 'arr-empty', snapshot.arrivals, 'baggage');
+  const updatedText = fmtUpdatedAt(snapshot.fetched_at);
+  document.getElementById('dep-updated').textContent = updatedText;
+  document.getElementById('arr-updated').textContent = updatedText;
+}
+
+function connectFids() {
+  const es = new EventSource('/api/fids-stream');
+  es.addEventListener('snapshot', (e) => {
+    try {
+      applyFidsSnapshot(JSON.parse(e.data));
+    } catch (err) {
+      console.error('解析 FIDS 資料失敗', err);
+    }
+  });
+  // FIDS 連線失敗不影響地圖那條 SSE，兩者是獨立連線；
+  // 失敗時保留原本的「尚未串接」版位文字，不用額外處理。
+}
+connectFids();
+
+/* ---------- 塔台通訊/即時影像小工具（YouTube 直播嵌入，預設靜音，點按鈕才開聲音） ----------
+   用同一套邏輯管理任意數量的小工具（目前是左上角塔台通訊 dock-left + 右下角機場即時影像 dock-right），
+   每個 .atc-widget 各自獨立播放/靜音；展開時只會收合「同一側」已展開的小工具，
+   左右兩側可以同時展開，不會互相重疊。 */
+const atcWidgets = [];
+
+function setupAtcWidget(widgetEl) {
+  const state = {
+    widgetEl,
+    videoId: widgetEl.dataset.videoId,
+    dockSide: widgetEl.classList.contains('dock-right') ? 'right' : 'left',
+    mount: widgetEl.querySelector('.atc-player-mount'),
+    audioBtn: widgetEl.querySelector('.atc-audio-toggle'),
+    sizeBtn: widgetEl.querySelector('.atc-size-toggle'),
+    wrap: widgetEl.querySelector('.atc-player-wrap'),
+    player: null,
+    audioOn: false,
+    expanded: false,
+  };
+
+  // 依目前 .atc-player-wrap 實際大小調整 YouTube iframe 尺寸，
+  // 展開/縮小切換、或視窗大小改變時都要呼叫。
+  state.resize = () => {
+    if (!state.player || typeof state.player.setSize !== 'function') return;
+    const rect = state.wrap.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      state.player.setSize(Math.round(rect.width), Math.round(rect.height));
+    }
+  };
+
+  state.audioBtn.addEventListener('click', () => {
+    if (!state.player || typeof state.player.unMute !== 'function') return;
+    if (!state.audioOn) {
+      state.player.unMute();
+      state.player.setVolume(100);
+      state.player.playVideo();
+      state.audioOn = true;
+      state.audioBtn.textContent = state.expanded ? '🔊' : '🔊 播放中';
+      state.audioBtn.classList.add('on');
+    } else {
+      state.player.mute();
+      state.audioOn = false;
+      state.audioBtn.textContent = state.expanded ? '🔇' : '🔇 開聲音';
+      state.audioBtn.classList.remove('on');
+    }
+  });
+
+  state.sizeBtn.addEventListener('click', () => {
+    const expanding = !state.expanded;
+    if (expanding) {
+      // 只收合「同一側」已展開的小工具，左右兩側可以同時展開
+      atcWidgets.forEach((other) => {
+        if (other !== state && other.expanded && other.dockSide === state.dockSide) {
+          collapseAtcWidget(other);
+        }
+      });
+    }
+    state.expanded = expanding;
+    widgetEl.classList.toggle('expanded', expanding);
+    // 展開狀態下控制按鈕是浮在影像上的小圖示，文字要精簡；縮小狀態維持完整文字方便閱讀。
+    state.sizeBtn.textContent = expanding ? '⤡' : '⤢ 放大';
+    state.audioBtn.textContent = state.audioOn
+      ? (expanding ? '🔊' : '🔊 播放中')
+      : (expanding ? '🔇' : '🔇 開聲音');
+    // 等 CSS transition（0.25s）跑完、容器尺寸穩定後，再讓 iframe 貼合新尺寸。
+    setTimeout(state.resize, 260);
+  });
+
+  atcWidgets.push(state);
+}
+
+function collapseAtcWidget(state) {
+  state.expanded = false;
+  state.widgetEl.classList.remove('expanded');
+  state.sizeBtn.textContent = '⤢ 放大';
+  state.audioBtn.textContent = state.audioOn ? '🔊 播放中' : '🔇 開聲音';
+  setTimeout(state.resize, 260);
+}
+
+document.querySelectorAll('.atc-widget').forEach(setupAtcWidget);
+
+// YouTube IFrame API 會在載入完成後自動呼叫這個全域函式名稱，不能改名。
+// 這裡一次幫所有已註冊的小工具建立各自獨立的播放器，預設都是靜音自動播放。
+function onYouTubeIframeAPIReady() {
+  atcWidgets.forEach((state) => {
+    state.player = new YT.Player(state.mount, {
+      height: '90',
+      width: '176',
+      videoId: state.videoId,
+      playerVars: {
+        autoplay: 1, mute: 1, playsinline: 1, rel: 0, modestbranding: 1,
+      },
+      events: {
+        onReady: (e) => {
+          e.target.mute();
+          e.target.playVideo();
+          state.resize(); // 讓 iframe 尺寸一開始就貼合容器，而不是用建構子裡的固定值
+        },
+        onError: () => {
+          state.audioBtn.textContent = '直播暫時無法載入';
+        },
+      },
+    });
+  });
+}
+
+window.addEventListener('resize', () => {
+  atcWidgets.forEach((state) => { if (state.expanded) state.resize(); });
+});
+
+/* ---------- 時鐘 ---------- */
+function tickClock() {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  document.getElementById('clock').textContent = fmt.format(now) + ' (台北時間)';
+}
+tickClock();
+setInterval(tickClock, 1000);
+</script>
+</body>
+</html>
