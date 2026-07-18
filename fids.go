@@ -25,6 +25,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -60,6 +61,33 @@ type fidsClient struct {
 
 // 官方文件列出的欄位名稱 -> 我們內部想要的欄位。
 // 用名稱比對而不是寫死欄位順序，這樣即使官方調整欄位順序也不會整支程式壞掉。
+// taipeiZone 用固定時差（UTC+8，台灣沒有日光節約時間）而不是 time.LoadLocation("Asia/Taipei")，
+// 這樣不用依賴系統上有沒有裝時區資料庫（Windows 環境常常沒有內建 IANA tzdata），純標準函式庫也能跑。
+var taipeiZone = time.FixedZone("CST", 8*60*60)
+
+// effectiveTime 算出一筆航班「實際該拿來判斷時間」的時間點：
+// 優先用預計時間（更貼近實際狀況），沒有預計時間才退回表訂時間（例如取消的班機常常沒有預計時間）。
+// 回傳的第二個值表示有沒有解析成功——解析不出來就不該被時間過濾邏輯誤刪，交由呼叫端決定怎麼處理。
+func effectiveTime(schedDate, schedTime, estDate, estTime string) (time.Time, bool) {
+	if t, ok := parseDateTime(estDate, estTime); ok {
+		return t, true
+	}
+	return parseDateTime(schedDate, schedTime)
+}
+
+func parseDateTime(date, clock string) (time.Time, bool) {
+	if date == "" || clock == "" {
+		return time.Time{}, false
+	}
+	// 時間欄位可能還沒被 trimSeconds 處理過（含秒）或已經被裁過，兩種格式都試。
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04"} {
+		if t, err := time.ParseInLocation(layout, date+" "+clock, taipeiZone); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
 var fidsHeaderAliases = map[string][]string{
 	"terminal":    {"航廈"},
 	"direction":   {"種類"},
@@ -137,6 +165,16 @@ func (c *fidsClient) fetch() (*FidsSnapshot, error) {
 	}
 
 	snapshot := &FidsSnapshot{FetchedAt: time.Now().UTC()}
+	now := time.Now().In(taipeiZone)
+
+	// 用暫存的 (時間, 資料) 配對收集，最後再依方向分別做時間過濾＋排序，
+	// 而不是邊解析邊塞進 snapshot——因為過濾規則需要看過全部欄位（含日期）才能判斷。
+	type timedRecord struct {
+		t   time.Time
+		has bool
+		rec FlightRecord
+	}
+	var departures, arrivals []timedRecord
 
 	for _, row := range records[1:] {
 		if len(row) == 0 {
@@ -157,14 +195,55 @@ func (c *fidsClient) fetch() (*FidsSnapshot, error) {
 			continue // 沒有班次號的資料列沒有意義，跳過
 		}
 
+		t, ok := effectiveTime(get(row, "sched_date"), get(row, "sched_time"), get(row, "est_date"), get(row, "est_time"))
+
 		switch classifyDirection(get(row, "direction")) {
 		case dirDeparture:
-			snapshot.Departures = append(snapshot.Departures, rec)
+			departures = append(departures, timedRecord{t: t, has: ok, rec: rec})
 		case dirArrival:
-			snapshot.Arrivals = append(snapshot.Arrivals, rec)
+			arrivals = append(arrivals, timedRecord{t: t, has: ok, rec: rec})
 		default:
 			snapshot.UnclassifiedCount++
 		}
+	}
+
+	// 離境：只留下「還沒起飛」的（有效時間 >= 現在），依時間由近到遠排序。
+	// 時間解析不出來的（極少數異常資料）保守處理成「還沒起飛」，不要默默漏掉。
+	// 例外：取消的班機不受時間限制，一律顯示（不管原訂時段是不是已經過了）。
+	var pendingDepartures []timedRecord
+	for _, d := range departures {
+		if isCancelled(d.rec.StatusZh) || !d.has || !d.t.Before(now) {
+			pendingDepartures = append(pendingDepartures, d)
+		}
+	}
+	sort.Slice(pendingDepartures, func(i, j int) bool {
+		// 沒解析出時間的排最後面，避免影響前面正常資料的排序
+		if !pendingDepartures[i].has {
+			return false
+		}
+		if !pendingDepartures[j].has {
+			return true
+		}
+		return pendingDepartures[i].t.Before(pendingDepartures[j].t)
+	})
+	for _, d := range pendingDepartures {
+		snapshot.Departures = append(snapshot.Departures, d.rec)
+	}
+
+	// 入境：只留下「最近 1 小時內抵達」的，依時間由新到舊排序（最新降落的排最上面）。
+	// 例外：取消的班機不受時間限制，一律顯示。
+	const recentWindow = 1 * time.Hour
+	var recentArrivals []timedRecord
+	for _, a := range arrivals {
+		if isCancelled(a.rec.StatusZh) || (a.has && !a.t.After(now) && now.Sub(a.t) <= recentWindow) {
+			recentArrivals = append(recentArrivals, a)
+		}
+	}
+	sort.Slice(recentArrivals, func(i, j int) bool {
+		return recentArrivals[i].t.After(recentArrivals[j].t)
+	})
+	for _, a := range recentArrivals {
+		snapshot.Arrivals = append(snapshot.Arrivals, a.rec)
 	}
 
 	if snapshot.UnclassifiedCount > 0 {
@@ -209,6 +288,11 @@ func isCoreField(key string) bool {
 	default:
 		return false
 	}
+}
+
+// isCancelled 判斷航班狀態文字是不是「取消」，跟前端 statusClass() 用的判斷邏輯保持一致。
+func isCancelled(status string) bool {
+	return strings.Contains(status, "取消") || strings.Contains(strings.ToUpper(status), "CANCEL")
 }
 
 // trimSeconds 把官方資料常見的 "HH:MM:SS" 格式裁成 "HH:MM"，

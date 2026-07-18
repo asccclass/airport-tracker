@@ -60,7 +60,7 @@
   #count b { color: var(--text); font-weight: 600; }
 
   /* ---------- 地圖 ---------- */
-  #map-wrap { flex: 1; position: relative; min-height: 0; }
+  #map-wrap { flex: 1; position: relative; min-height: 0; overflow: hidden; }
   #map { position: absolute; inset: 0; background: #05070c; }
 
   .plane-tag {
@@ -151,6 +151,7 @@
     width: 33%;
     height: 100%;
     padding: 0;
+    box-shadow: none;
   }
   .atc-widget.expanded.dock-left {
     left: 0; right: auto; bottom: auto;
@@ -217,7 +218,7 @@
   <div id="map-wrap">
     <div id="map"></div>
 
-    <div id="atc-widget-1" class="atc-widget dock-left" data-video-id="My-tDEttvXg">
+    <div id="atc-widget-1" class="atc-widget dock-left" data-video-id="My-tDEttvXg" data-default-audio="on">
       <div class="atc-player-wrap"><div class="atc-player-mount"></div></div>
       <div class="atc-controls">
         <button class="atc-audio-toggle">🔇 開聲音</button>
@@ -453,6 +454,7 @@ function setupAtcWidget(widgetEl) {
     widgetEl,
     videoId: widgetEl.dataset.videoId,
     dockSide: widgetEl.classList.contains('dock-right') ? 'right' : 'left',
+    defaultAudioOn: widgetEl.dataset.defaultAudio === 'on',
     mount: widgetEl.querySelector('.atc-player-mount'),
     audioBtn: widgetEl.querySelector('.atc-audio-toggle'),
     sizeBtn: widgetEl.querySelector('.atc-size-toggle'),
@@ -472,6 +474,17 @@ function setupAtcWidget(widgetEl) {
     }
   };
 
+  // 統一在這裡更新按鈕文字/樣式，展開/收合/開關聲音都共用同一套規則，避免各處各寫一次而不一致。
+  state.updateAudioBtn = () => {
+    if (state.audioOn) {
+      state.audioBtn.textContent = state.expanded ? '🔊' : '🔊 播放中';
+      state.audioBtn.classList.add('on');
+    } else {
+      state.audioBtn.textContent = state.expanded ? '🔇' : '🔇 開聲音';
+      state.audioBtn.classList.remove('on');
+    }
+  };
+
   state.audioBtn.addEventListener('click', () => {
     if (!state.player || typeof state.player.unMute !== 'function') return;
     if (!state.audioOn) {
@@ -479,14 +492,11 @@ function setupAtcWidget(widgetEl) {
       state.player.setVolume(100);
       state.player.playVideo();
       state.audioOn = true;
-      state.audioBtn.textContent = state.expanded ? '🔊' : '🔊 播放中';
-      state.audioBtn.classList.add('on');
     } else {
       state.player.mute();
       state.audioOn = false;
-      state.audioBtn.textContent = state.expanded ? '🔇' : '🔇 開聲音';
-      state.audioBtn.classList.remove('on');
     }
+    state.updateAudioBtn();
   });
 
   state.sizeBtn.addEventListener('click', () => {
@@ -503,9 +513,7 @@ function setupAtcWidget(widgetEl) {
     widgetEl.classList.toggle('expanded', expanding);
     // 展開狀態下控制按鈕是浮在影像上的小圖示，文字要精簡；縮小狀態維持完整文字方便閱讀。
     state.sizeBtn.textContent = expanding ? '⤡' : '⤢ 放大';
-    state.audioBtn.textContent = state.audioOn
-      ? (expanding ? '🔊' : '🔊 播放中')
-      : (expanding ? '🔇' : '🔇 開聲音');
+    state.updateAudioBtn();
     // 等 CSS transition（0.25s）跑完、容器尺寸穩定後，再讓 iframe 貼合新尺寸。
     setTimeout(state.resize, 260);
   });
@@ -517,14 +525,18 @@ function collapseAtcWidget(state) {
   state.expanded = false;
   state.widgetEl.classList.remove('expanded');
   state.sizeBtn.textContent = '⤢ 放大';
-  state.audioBtn.textContent = state.audioOn ? '🔊 播放中' : '🔇 開聲音';
+  state.updateAudioBtn();
   setTimeout(state.resize, 260);
 }
 
 document.querySelectorAll('.atc-widget').forEach(setupAtcWidget);
 
 // YouTube IFrame API 會在載入完成後自動呼叫這個全域函式名稱，不能改名。
-// 這裡一次幫所有已註冊的小工具建立各自獨立的播放器，預設都是靜音自動播放。
+// 這裡一次幫所有已註冊的小工具建立各自獨立的播放器。
+// 預設靜音的小工具直接靜音自動播放；預設要開聲音的（data-default-audio="on"）
+// 會先「嘗試」有聲音自動播放，但瀏覽器政策不保證會放行——
+// 如果 0.8 秒後偵測到其實沒有真的播放起來（代表被瀏覽器擋下來了），
+// 就自動退回靜音狀態，並讓按鈕誠實顯示「開聲音」，不會顯示播放中但其實沒聲音的誤導畫面。
 function onYouTubeIframeAPIReady() {
   atcWidgets.forEach((state) => {
     state.player = new YT.Player(state.mount, {
@@ -532,12 +544,31 @@ function onYouTubeIframeAPIReady() {
       width: '176',
       videoId: state.videoId,
       playerVars: {
-        autoplay: 1, mute: 1, playsinline: 1, rel: 0, modestbranding: 1,
+        autoplay: 1,
+        mute: state.defaultAudioOn ? 0 : 1,
+        playsinline: 1, rel: 0, modestbranding: 1,
       },
       events: {
         onReady: (e) => {
-          e.target.mute();
-          e.target.playVideo();
+          if (state.defaultAudioOn) {
+            e.target.unMute();
+            e.target.setVolume(100);
+            e.target.playVideo();
+            state.audioOn = true;
+            state.updateAudioBtn();
+            // 驗證瀏覽器真的有讓「有聲音自動播放」通過，沒有的話就退回靜音狀態。
+            setTimeout(() => {
+              if (e.target.getPlayerState() !== 1 /* YT.PlayerState.PLAYING */) {
+                e.target.mute();
+                state.audioOn = false;
+                state.updateAudioBtn();
+                e.target.playVideo();
+              }
+            }, 800);
+          } else {
+            e.target.mute();
+            e.target.playVideo();
+          }
           state.resize(); // 讓 iframe 尺寸一開始就貼合容器，而不是用建構子裡的固定值
         },
         onError: () => {

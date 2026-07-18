@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -18,6 +19,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"airport-tracker/tdx"
 )
 
 //go:embed static
@@ -253,6 +256,12 @@ func sseHandler(b *broadcaster) http.HandlerFunc {
 // ---------- 主程式 ----------
 
 func main() {
+	// 先讀 .env（如果有的話），這樣底下 flag 的預設值才能吃到 .env 檔案裡設定的值。
+	// 系統環境變數的優先權比 envfile 高（loadEnvFile 內部邏輯），flag 的優先權又比兩者都高。
+	if n := loadEnvFile("envfile"); n > 0 {
+		log.Printf("已從 envfile 讀取 %d 個環境變數", n)
+	}
+
 	var (
 		addr         = flag.String("addr", ":8080", "監聽位址")
 		interval     = flag.Duration("interval", 15*time.Second, "輪詢 OpenSky 的間隔（匿名帳號有速率限制，不建議低於 10 秒）")
@@ -260,9 +269,15 @@ func main() {
 		loMin        = flag.Float64("lomin", 121.05, "空域範圍：最小經度")
 		laMax        = flag.Float64("lamax", 25.20, "空域範圍：最大緯度")
 		loMax        = flag.Float64("lomax", 121.40, "空域範圍：最大經度")
-		fidsURL      = flag.String("fids-url", "https://odp.taoyuan-airport.com/dataset/2023081816?format=csv", "桃園機場即時航班 CSV 資料來源網址")
-		fidsInterval = flag.Duration("fids-interval", 5*time.Minute, "輪詢 FIDS 起降時刻表的間隔（官方資料本身每 5 分鐘更新一次，抓太頻繁沒有意義）")
-		fidsDebug    = flag.Bool("fids-debug", false, "印出 FIDS CSV 原始表頭與欄位對應結果，第一次串接時用來校正格式")
+		fidsURL      = flag.String("fids-url", "https://odp.taoyuan-airport.com/dataset/2023081816?format=csv", "桃園機場即時航班 CSV 資料來源網址（fids-source=csv 時使用）")
+		fidsInterval = flag.Duration("fids-interval", 1*time.Minute, "輪詢 FIDS 起降時刻表的間隔")
+		fidsDebug    = flag.Bool("fids-debug", false, "印出 FIDS 原始資料，第一次串接時用來校正格式")
+
+		fidsSource   = flag.String("fids-source", getenvDefault("FIDS_SOURCE", "tdx"), "FIDS 起降資料來源：tdx（交通部 TDX 平台，需要 Client Id/Secret）或 csv（桃園機場官方 CSV，免驗證但欄位較少）。也可以用 .env 檔案的 FIDS_SOURCE 設定")
+		tdxClientID  = flag.String("tdx-client-id", getenvDefault("TDX_CLIENT_ID", ""), "TDX Client Id（也可以用 .env 檔案的 TDX_CLIENT_ID 設定，不要寫死在程式碼或指令歷史紀錄裡）")
+		tdxSecret    = flag.String("tdx-client-secret", getenvDefault("TDX_CLIENT_SECRET", ""), "TDX Client Secret（同上，建議用 .env 檔案設定）")
+		tdxAirport   = flag.String("tdx-airport", getenvDefault("TDX_AIRPORT", "TPE"), "TDX 查詢的機場 IATA 代碼")
+		tdxRateLimit = flag.Int("tdx-rate-limit", 5, "TDX 每分鐘最多呼叫次數（含換 token），對應金鑰方案的速率限制，不要調超過方案上限")
 	)
 	flag.Parse()
 
@@ -278,6 +293,27 @@ func main() {
 		debug:      *fidsDebug,
 	}
 	fidsBc := newBroadcaster()
+
+	useTDX := *fidsSource == "tdx"
+	var tdxClient *tdx.Client
+	if useTDX {
+		if *tdxClientID == "" || *tdxSecret == "" {
+			log.Printf("警告：fids-source=tdx 但沒有設定 TDX_CLIENT_ID / TDX_CLIENT_SECRET，自動退回使用桃園機場 CSV 資料源。" +
+				"請在 .env 檔案設定 TDX_CLIENT_ID 和 TDX_CLIENT_SECRET，或用 -tdx-client-id / -tdx-client-secret 參數指定。")
+			useTDX = false
+		} else {
+			tdxClient = tdx.New(tdx.Config{
+				ClientID:     *tdxClientID,
+				ClientSecret: *tdxSecret,
+				AirportIATA:  *tdxAirport,
+				Debug:        *fidsDebug,
+			}, *tdxRateLimit)
+			log.Printf("FIDS 資料源：TDX 運輸資料流通服務（機場代碼 %s，速率限制 %d 次/分）", *tdxAirport, *tdxRateLimit)
+		}
+	}
+	if !useTDX {
+		log.Printf("FIDS 資料源：桃園機場官方 CSV（%s）", *fidsURL)
+	}
 
 	// 背景輪詢迴圈
 	go func() {
@@ -304,22 +340,41 @@ func main() {
 		}
 	}()
 
-	// 背景輪詢迴圈：FIDS 起降時刻表
+	// 背景輪詢迴圈：FIDS 起降時刻表（依設定使用 TDX 或桃園機場 CSV 其中一種）
 	go func() {
+		ctx := context.Background()
 		poll := func() {
-			snapshot, err := fc.fetch()
-			if err != nil {
-				log.Printf("拉取 FIDS 資料失敗: %v", err)
-				return
+			var data []byte
+			var depCount, arrCount, unclassified int
+
+			if useTDX {
+				snapshot, err := tdxClient.Fetch(ctx)
+				if err != nil {
+					log.Printf("拉取 TDX FIDS 資料失敗: %v", err)
+					return
+				}
+				b, err := json.Marshal(snapshot)
+				if err != nil {
+					log.Printf("序列化 TDX FIDS 資料失敗: %v", err)
+					return
+				}
+				data, depCount, arrCount = b, len(snapshot.Departures), len(snapshot.Arrivals)
+			} else {
+				snapshot, err := fc.fetch()
+				if err != nil {
+					log.Printf("拉取 FIDS 資料失敗: %v", err)
+					return
+				}
+				b, err := snapshot.toJSON()
+				if err != nil {
+					log.Printf("序列化 FIDS 資料失敗: %v", err)
+					return
+				}
+				data, depCount, arrCount, unclassified = b, len(snapshot.Departures), len(snapshot.Arrivals), snapshot.UnclassifiedCount
 			}
-			data, err := snapshot.toJSON()
-			if err != nil {
-				log.Printf("序列化 FIDS 資料失敗: %v", err)
-				return
-			}
+
 			fidsBc.publish(data)
-			log.Printf("已更新 FIDS：出境 %d 筆、入境 %d 筆（%d 筆無法分類）",
-				len(snapshot.Departures), len(snapshot.Arrivals), snapshot.UnclassifiedCount)
+			log.Printf("已更新 FIDS：出境 %d 筆、入境 %d 筆（%d 筆無法分類）", depCount, arrCount, unclassified)
 		}
 
 		poll()
