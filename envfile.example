@@ -10,3 +10,9 @@ TDX_CLIENT_SECRET=你的Client Secret
 
 # 查詢的機場 IATA 代碼，桃園機場是 TPE
 TDX_AIRPORT=TPE
+
+# OpenSky 驗證身分存取（可選，沒設定就用匿名存取，額度較低容易 429）
+# 優先權比 credentials.json 高。也可以不設這兩個變數，直接把官方下載的
+# credentials.json 檔案放在程式同目錄，程式會自動讀取。
+# OPENSKY_CLIENT_ID=你的clientId
+# OPENSKY_CLIENT_SECRET=你的clientSecret

@@ -2,13 +2,14 @@
 // 抓取即時航班起降時刻表 (FIDS) 的 CSV，解析成結構化資料。
 //
 // 資料來源說明（data.gov.tw dataset 26194，2023081816）：
-//   更新頻率：每 5 分鐘
-//   編碼：UTF-8（無 BOM），CRLF 換行，每個欄位用雙引號包起來（RFC 4180 標準格式）
-//   欄位（已用官方實際輸出驗證過，順序如下，但程式仍用欄位名稱動態對應以防未來調整）：
-//   航廈、種類、航空公司代碼、航空公司中文、班次、機門、
-//   表訂日期、表訂時間、預計日期、預計時間、
-//   往來地點、往來地點英文、往來地點中文、航班狀態、機型、
-//   其他航點、行李轉盤、報到櫃台、航班動態中文、航班動態英文
+//
+//	更新頻率：每 5 分鐘
+//	編碼：UTF-8（無 BOM），CRLF 換行，每個欄位用雙引號包起來（RFC 4180 標準格式）
+//	欄位（已用官方實際輸出驗證過，順序如下，但程式仍用欄位名稱動態對應以防未來調整）：
+//	航廈、種類、航空公司代碼、航空公司中文、班次、機門、
+//	表訂日期、表訂時間、預計日期、預計時間、
+//	往來地點、往來地點英文、往來地點中文、航班狀態、機型、
+//	其他航點、行李轉盤、報到櫃台、航班動態中文、航班動態英文
 //
 // 已用真實資料樣本驗證確認：
 //   - 種類：A＝入境 (arrival)、D＝出境 (departure)
@@ -32,15 +33,15 @@ import (
 
 // FlightRecord 是整理過後、要送給前端的單筆航班資料。
 type FlightRecord struct {
-	Terminal   string `json:"terminal"`
-	FlightNo   string `json:"flight_no"`
-	AirlineZh  string `json:"airline_zh"`
-	Gate       string `json:"gate"` // 出境用登機門，入境會是空的
-	Baggage    string `json:"baggage"` // 入境用行李轉盤，出境會是空的
-	SchedTime  string `json:"sched_time"`
-	EstTime    string `json:"est_time"`
-	PlaceZh    string `json:"place_zh"` // 出境=目的地，入境=起飛地
-	StatusZh   string `json:"status_zh"`
+	Terminal  string `json:"terminal"`
+	FlightNo  string `json:"flight_no"`
+	AirlineZh string `json:"airline_zh"`
+	Gate      string `json:"gate"`    // 出境用登機門，入境會是空的
+	Baggage   string `json:"baggage"` // 入境用行李轉盤，出境會是空的
+	SchedTime string `json:"sched_time"`
+	EstTime   string `json:"est_time"`
+	PlaceZh   string `json:"place_zh"` // 出境=目的地，入境=起飛地
+	StatusZh  string `json:"status_zh"`
 }
 
 // FidsSnapshot 是某一次抓取後、要推送給前端的完整資料包。
@@ -51,6 +52,12 @@ type FidsSnapshot struct {
 	// Unclassified 統計有多少筆資料因為「種類」欄位辨識不出來而被跳過，
 	// 用來在前端/log 提示「這裡可能需要校正」，而不是默默漏資料。
 	UnclassifiedCount int `json:"unclassified_count"`
+
+	// AllDepartures/AllArrivals 是完整一天的清單，不經過「還沒起飛」/「最近1小時」那套
+	// 顯示用的時間過濾。用 json:"-" 標記，不會傳給前端，純粹給後端拿去算「這個小時起降有多忙」，
+	// 讓 OpenSky 的請求額度可以依實際起降時段分配。
+	AllDepartures []FlightRecord `json:"-"`
+	AllArrivals   []FlightRecord `json:"-"`
 }
 
 type fidsClient struct {
@@ -89,18 +96,18 @@ func parseDateTime(date, clock string) (time.Time, bool) {
 }
 
 var fidsHeaderAliases = map[string][]string{
-	"terminal":    {"航廈"},
-	"direction":   {"種類"},
-	"airline_zh":  {"航空公司中文"},
-	"flight_no":   {"班次"},
-	"gate":        {"機門"},
-	"sched_date":  {"表訂日期"},
-	"sched_time":  {"表訂時間"},
-	"est_date":    {"預計日期"},
-	"est_time":    {"預計時間"},
-	"place_zh":    {"往來地點中文", "往來地點"},
-	"status_zh":   {"航班狀態", "航班動態中文"},
-	"baggage":     {"行李轉盤"},
+	"terminal":   {"航廈"},
+	"direction":  {"種類"},
+	"airline_zh": {"航空公司中文"},
+	"flight_no":  {"班次"},
+	"gate":       {"機門"},
+	"sched_date": {"表訂日期"},
+	"sched_time": {"表訂時間"},
+	"est_date":   {"預計日期"},
+	"est_time":   {"預計時間"},
+	"place_zh":   {"往來地點中文", "往來地點"},
+	"status_zh":  {"航班狀態", "航班動態中文"},
+	"baggage":    {"行李轉盤"},
 }
 
 func (c *fidsClient) fetch() (*FidsSnapshot, error) {
@@ -205,6 +212,13 @@ func (c *fidsClient) fetch() (*FidsSnapshot, error) {
 		default:
 			snapshot.UnclassifiedCount++
 		}
+	}
+
+	for _, d := range departures {
+		snapshot.AllDepartures = append(snapshot.AllDepartures, d.rec)
+	}
+	for _, a := range arrivals {
+		snapshot.AllArrivals = append(snapshot.AllArrivals, a.rec)
 	}
 
 	// 離境：只留下「還沒起飛」的（有效時間 >= 現在），依時間由近到遠排序。

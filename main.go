@@ -17,6 +17,9 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,9 +61,114 @@ type Snapshot struct {
 
 // ---------- 從 OpenSky 拉資料並轉換 ----------
 
+// openSkyTokenManager 負責管理 OpenSky 的 OAuth2 Client Credentials 流程。
+// OpenSky 在 2026 年 3 月把舊的帳號密碼登入方式退休，改成這種方式；
+// clientId/clientSecret 可以從登入 OpenSky 帳號後在 Account 頁面建立 API client 拿到，
+// 官方會提供一個 credentials.json 檔案（格式為 {"clientId": "...", "clientSecret": "..."}）。
+type openSkyTokenManager struct {
+	httpClient   *http.Client
+	clientID     string
+	clientSecret string
+
+	mu          sync.Mutex
+	accessToken string
+	expiry      time.Time
+}
+
+const openSkyTokenURL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+
+func newOpenSkyTokenManager(clientID, clientSecret string) *openSkyTokenManager {
+	if clientID == "" || clientSecret == "" {
+		return nil // 沒有憑證就不建立，呼叫端會退回匿名存取
+	}
+	return &openSkyTokenManager{
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		clientID:     clientID,
+		clientSecret: clientSecret,
+	}
+}
+
+// openSkyCredentialsFile 對應官方 credentials.json 的格式。
+type openSkyCredentialsFile struct {
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+}
+
+// loadOpenSkyCredentialsFile 讀取官方下載的 credentials.json，找不到檔案不是錯誤
+// （回傳空字串，讓呼叫端退回匿名或改用其他來源），格式不對才視為錯誤。
+func loadOpenSkyCredentialsFile(path string) (clientID, clientSecret string, err error) {
+	body, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return "", "", nil
+		}
+		return "", "", readErr
+	}
+	var creds openSkyCredentialsFile
+	if err := json.Unmarshal(body, &creds); err != nil {
+		return "", "", fmt.Errorf("解析 %s 失敗: %w", path, err)
+	}
+	return creds.ClientID, creds.ClientSecret, nil
+}
+
+// token 回傳一個有效的 access token，需要的話會自動重新換發（留 60 秒緩衝）。
+func (tm *openSkyTokenManager) token() (string, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if tm.accessToken != "" && time.Now().Before(tm.expiry.Add(-60*time.Second)) {
+		return tm.accessToken, nil
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", tm.clientID)
+	form.Set("client_secret", tm.clientSecret)
+
+	req, err := http.NewRequest(http.MethodPost, openSkyTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := tm.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("換取 OpenSky access token 失敗: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("OpenSky 驗證失敗（狀態碼 %d，請確認 clientId/clientSecret 是否正確）: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return "", fmt.Errorf("解析 OpenSky token 回應失敗: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return "", fmt.Errorf("OpenSky 回應沒有 access_token: %s", string(body))
+	}
+
+	expiresIn := tokenResp.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 1800 // 官方文件說大約 30 分鐘，沒給的話用這個當保守預設值
+	}
+	tm.accessToken = tokenResp.AccessToken
+	tm.expiry = time.Now().Add(time.Duration(expiresIn) * time.Second)
+	return tm.accessToken, nil
+}
+
 type openSkyClient struct {
-	httpClient *http.Client
-	bbox       boundingBox
+	httpClient   *http.Client
+	bbox         boundingBox
+	tokenManager *openSkyTokenManager // nil 代表匿名存取（額度較低、容易 429）
 }
 
 type boundingBox struct {
@@ -78,6 +186,17 @@ func (c *openSkyClient) fetch() (*Snapshot, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "airport-tracker-mvp/1.0")
+
+	if c.tokenManager != nil {
+		token, err := c.tokenManager.token()
+		if err != nil {
+			// token 換不到就照舊送匿名請求，不要讓整個輪詢直接掛掉；
+			// 錯誤訊息會被記錄下來，方便發現憑證設定有問題。
+			log.Printf("OpenSky token 換取失敗，這次改用匿名請求: %v", err)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -174,6 +293,26 @@ type broadcaster struct {
 	mu      sync.Mutex
 	clients map[chan []byte]struct{}
 	latest  []byte // 快取最新一次的資料，讓新連上的用戶端可以馬上拿到
+}
+
+// convertTDXRecords 把 tdx.FlightRecord 轉成本套件的 FlightRecord，
+// 兩者欄位名稱刻意保持一致，逐筆轉型即可。
+func convertTDXRecords(in []tdx.FlightRecord) []FlightRecord {
+	out := make([]FlightRecord, len(in))
+	for i, r := range in {
+		out[i] = FlightRecord{
+			Terminal:  r.Terminal,
+			FlightNo:  r.FlightNo,
+			AirlineZh: r.AirlineZh,
+			Gate:      r.Gate,
+			Baggage:   r.Baggage,
+			SchedTime: r.SchedTime,
+			EstTime:   r.EstTime,
+			PlaceZh:   r.PlaceZh,
+			StatusZh:  r.StatusZh,
+		}
+	}
+	return out
 }
 
 func newBroadcaster() *broadcaster {
@@ -278,12 +417,38 @@ func main() {
 		tdxSecret    = flag.String("tdx-client-secret", getenvDefault("TDX_CLIENT_SECRET", ""), "TDX Client Secret（同上，建議用 .env 檔案設定）")
 		tdxAirport   = flag.String("tdx-airport", getenvDefault("TDX_AIRPORT", "TPE"), "TDX 查詢的機場 IATA 代碼")
 		tdxRateLimit = flag.Int("tdx-rate-limit", 5, "TDX 每分鐘最多呼叫次數（含換 token），對應金鑰方案的速率限制，不要調超過方案上限")
+
+		openSkyCredsFile    = flag.String("opensky-credentials", getenvDefault("OPENSKY_CREDENTIALS_FILE", "credentials.json"), "OpenSky 官方下載的 credentials.json 路徑（登入 OpenSky 帳號、Account 頁面建立 API client 取得）")
+		openSkyClientID     = flag.String("opensky-client-id", getenvDefault("OPENSKY_CLIENT_ID", ""), "OpenSky clientId，優先權比 credentials.json 高；也可以用 envfile 的 OPENSKY_CLIENT_ID 設定")
+		openSkyClientSec    = flag.String("opensky-client-secret", getenvDefault("OPENSKY_CLIENT_SECRET", ""), "OpenSky clientSecret，同上")
+		openSkyDailyCredits = flag.Int("opensky-daily-credits", 4000, "OpenSky 每日額度（Standard user 是 4000），用來動態分配一天各時段的請求次數")
+		openSkySchedule     = flag.Bool("opensky-schedule", true, "依 FIDS 起降時間分佈動態分配 OpenSky 額度（尖峰時段多打、離峰/沒有起降的時段不打）；設為 false 則回到固定 -interval 頻率")
 	)
 	flag.Parse()
 
+	openSkyClientIDVal, openSkyClientSecVal := *openSkyClientID, *openSkyClientSec
+	if openSkyClientIDVal == "" || openSkyClientSecVal == "" {
+		// flag/envfile 沒給的話，退回讀 credentials.json；兩邊都沒有就維持匿名存取。
+		fileID, fileSecret, err := loadOpenSkyCredentialsFile(*openSkyCredsFile)
+		if err != nil {
+			log.Printf("讀取 %s 失敗（將以匿名方式存取 OpenSky，額度較低）: %v", *openSkyCredsFile, err)
+		} else if fileID != "" && fileSecret != "" {
+			openSkyClientIDVal, openSkyClientSecVal = fileID, fileSecret
+			log.Printf("已從 %s 讀取 OpenSky API 憑證", *openSkyCredsFile)
+		}
+	}
+
 	client := &openSkyClient{
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		bbox:       boundingBox{LaMin: *laMin, LoMin: *loMin, LaMax: *laMax, LoMax: *loMax},
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		bbox:         boundingBox{LaMin: *laMin, LoMin: *loMin, LaMax: *laMax, LoMax: *loMax},
+		tokenManager: newOpenSkyTokenManager(openSkyClientIDVal, openSkyClientSecVal),
+	}
+	if client.tokenManager == nil {
+		log.Printf("OpenSky：以匿名方式存取（額度較低，容易遇到 429）。" +
+			"想提高額度，去 https://opensky-network.org 登入帳號、在 Account 頁面建立 API client，" +
+			"下載 credentials.json 放在程式同目錄，或用 -opensky-client-id/-opensky-client-secret 指定。")
+	} else {
+		log.Printf("OpenSky：使用已驗證身分存取（clientId=%s）", openSkyClientIDVal)
 	}
 	bc := newBroadcaster()
 
@@ -293,6 +458,10 @@ func main() {
 		debug:      *fidsDebug,
 	}
 	fidsBc := newBroadcaster()
+
+	// 共用的「今日起降活動」資料，FIDS 輪詢迴圈更新，OpenSky 排程器讀取，
+	// 用來決定「這個小時該不該打 OpenSky、打幾次」。
+	activity := &fidsActivityHolder{}
 
 	useTDX := *fidsSource == "tdx"
 	var tdxClient *tdx.Client
@@ -315,7 +484,7 @@ func main() {
 		log.Printf("FIDS 資料源：桃園機場官方 CSV（%s）", *fidsURL)
 	}
 
-	// 背景輪詢迴圈
+	// 背景輪詢迴圈：OpenSky 即時航班位置
 	go func() {
 		poll := func() {
 			snapshot, err := client.fetch()
@@ -332,10 +501,37 @@ func main() {
 			log.Printf("已更新 %d 架航班", len(snapshot.Aircraft))
 		}
 
-		poll() // 啟動時先抓一次，不用等第一個 interval
-		ticker := time.NewTicker(*interval)
-		defer ticker.Stop()
-		for range ticker.C {
+		poll() // 啟動時先抓一次，不用等排程器算出第一個延遲
+
+		if !*openSkySchedule {
+			// 額度排程功能關閉：回到原本固定間隔的行為。
+			ticker := time.NewTicker(*interval)
+			defer ticker.Stop()
+			for range ticker.C {
+				poll()
+			}
+			return
+		}
+
+		creditCost := openSkyCreditCost(client.bbox)
+		scheduler := newOpenSkyScheduler(*openSkyDailyCredits, creditCost)
+		log.Printf("OpenSky 額度排程：每日 %d credits，範圍查詢每次花 %d credit，換算最多 %d 次/天，依 FIDS 起降時間分配到有航班活動的時段",
+			*openSkyDailyCredits, creditCost, *openSkyDailyCredits/creditCost)
+
+		for {
+			now := time.Now()
+			deps, arrs, ready := activity.get()
+			if !ready {
+				log.Printf("尚未取得 FIDS 資料，OpenSky 額度先用 24 小時平均分配當保底，等 FIDS 資料到位後會在明天自動改用實際起降分佈")
+			}
+			scheduler.refreshIfNeeded(now, deps, arrs)
+
+			delay := scheduler.nextDelay(now)
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+
+			scheduler.recordCall()
 			poll()
 		}
 	}()
@@ -359,6 +555,10 @@ func main() {
 					return
 				}
 				data, depCount, arrCount = b, len(snapshot.Departures), len(snapshot.Arrivals)
+				// TDX 回傳的就是完整一天的清單（沒有套用「還沒起飛」/「最近1小時」那套顯示過濾），
+				// 直接拿來當 OpenSky 排程要用的活動資料。tdx.FlightRecord 跟這裡的 FlightRecord
+				// 欄位名稱一致，逐筆轉型即可。
+				activity.set(convertTDXRecords(snapshot.Departures), convertTDXRecords(snapshot.Arrivals))
 			} else {
 				snapshot, err := fc.fetch()
 				if err != nil {
@@ -371,6 +571,9 @@ func main() {
 					return
 				}
 				data, depCount, arrCount, unclassified = b, len(snapshot.Departures), len(snapshot.Arrivals), snapshot.UnclassifiedCount
+				// 用 AllDepartures/AllArrivals（完整一天、沒套用顯示過濾的版本）
+				// 給 OpenSky 排程器算活動分佈，不要用已經被「還沒起飛/最近1小時」濾過的那份。
+				activity.set(snapshot.AllDepartures, snapshot.AllArrivals)
 			}
 
 			fidsBc.publish(data)

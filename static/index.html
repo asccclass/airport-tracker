@@ -125,6 +125,13 @@
   .status-cancel { color: var(--live); font-weight: 700; }
   .status-delay { color: var(--accent); font-weight: 600; }
   .status-normal { color: var(--text-dim); }
+
+  /* 離境/入境清單裡「離現在時間最近」的那一筆，各用不同顏色標出來 */
+  tr.focus-dep { background: rgba(255, 206, 84, 0.14); box-shadow: inset 3px 0 0 var(--accent); }
+  tr.focus-dep td:first-child { color: var(--accent); font-weight: 700; }
+  tr.focus-arr { background: rgba(53, 208, 127, 0.14); box-shadow: inset 3px 0 0 var(--green); }
+  tr.focus-arr td:first-child { color: var(--green); font-weight: 700; }
+
   .sched-old { color: var(--text-dim); text-decoration: line-through; font-size: 10px; display: block; }
   .sched-new { color: var(--green); font-weight: 600; }
 
@@ -388,7 +395,7 @@ function statusClass(status) {
   return 'status-normal';
 }
 
-function renderFidsRows(tbodyId, emptyId, records, thirdColKey) {
+function renderFidsRows(tbodyId, emptyId, records, thirdColKey, focusClass) {
   const tbody = document.getElementById(tbodyId);
   const empty = document.getElementById(emptyId);
 
@@ -399,8 +406,10 @@ function renderFidsRows(tbodyId, emptyId, records, thirdColKey) {
   }
   empty.classList.add('hidden');
 
-  tbody.innerHTML = records.map((r) => `
-    <tr>
+  // 清單本身已經是「離現在時間最近」排最前面（離境=由近到遠，入境=由新到舊），
+  // 所以第一筆就是要特別標色的那一筆，不用另外比對時間。
+  tbody.innerHTML = records.map((r, i) => `
+    <tr class="${i === 0 ? focusClass : ''}">
       <td>${escapeHtml(r.flight_no)}</td>
       <td>${schedCell(r)}</td>
       <td>${escapeHtml(r.place_zh)}</td>
@@ -422,8 +431,8 @@ function fmtUpdatedAt(iso) {
 }
 
 function applyFidsSnapshot(snapshot) {
-  renderFidsRows('dep-body', 'dep-empty', snapshot.departures, 'gate');
-  renderFidsRows('arr-body', 'arr-empty', snapshot.arrivals, 'baggage');
+  renderFidsRows('dep-body', 'dep-empty', snapshot.departures, 'gate', 'focus-dep');
+  renderFidsRows('arr-body', 'arr-empty', snapshot.arrivals, 'baggage', 'focus-arr');
   const updatedText = fmtUpdatedAt(snapshot.fetched_at);
   document.getElementById('dep-updated').textContent = updatedText;
   document.getElementById('arr-updated').textContent = updatedText;
