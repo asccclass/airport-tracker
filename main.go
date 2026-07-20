@@ -492,7 +492,7 @@ func main() {
 				log.Printf("拉取 OpenSky 資料失敗: %v", err)
 				return
 			}
-			data, err := json.Marshal(snapshot)
+			data, err := enrichSnapshot(snapshot)
 			if err != nil {
 				log.Printf("序列化資料失敗: %v", err)
 				return
@@ -559,6 +559,7 @@ func main() {
 				// 直接拿來當 OpenSky 排程要用的活動資料。tdx.FlightRecord 跟這裡的 FlightRecord
 				// 欄位名稱一致，逐筆轉型即可。
 				activity.set(convertTDXRecords(snapshot.Departures), convertTDXRecords(snapshot.Arrivals))
+				globalFIDSLookup.rebuildFromSnapshot(convertTDXRecords(snapshot.Departures), convertTDXRecords(snapshot.Arrivals))
 			} else {
 				snapshot, err := fc.fetch()
 				if err != nil {
@@ -574,6 +575,7 @@ func main() {
 				// 用 AllDepartures/AllArrivals（完整一天、沒套用顯示過濾的版本）
 				// 給 OpenSky 排程器算活動分佈，不要用已經被「還沒起飛/最近1小時」濾過的那份。
 				activity.set(snapshot.AllDepartures, snapshot.AllArrivals)
+				globalFIDSLookup.rebuildFromSnapshot(snapshot.AllDepartures, snapshot.AllArrivals)
 			}
 
 			fidsBc.publish(data)
@@ -596,7 +598,24 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/stream", sseHandler(bc))
 	mux.HandleFunc("/api/fids-stream", sseHandler(fidsBc))
+	translator := newGeminiTranslatorFromEnv()
+	mux.HandleFunc("/api/translate-status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled": translator != nil,
+		})
+	})
+	if translator != nil {
+		log.Printf("即時語音翻譯已啟用：Gemini model=%s", translator.model)
+		mux.HandleFunc("/api/translate", translator.handler())
+		mux.HandleFunc("/api/translate-audio", translator.audioHandler())
+	} else {
+		log.Printf("即時語音翻譯未啟用：尚未設定 GEMINI_API_KEY")
+	}
 	mux.Handle("/", http.FileServer(http.FS(staticContent)))
+
+	// 背景載入 ICAO↔IATA 航空公司代碼對照表（用於呼號比對 FIDS 班次，取得目的地資訊）
+	startAirlineMapLoader(&http.Client{Timeout: 15 * time.Second})
 
 	log.Printf("伺服器啟動於 http://localhost%s （每 %s 更新一次，範圍 lat[%.2f,%.2f] lon[%.2f,%.2f]）",
 		*addr, *interval, *laMin, *laMax, *loMin, *loMax)

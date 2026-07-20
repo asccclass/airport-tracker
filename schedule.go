@@ -6,10 +6,13 @@
 package main
 
 import (
+	"log"
 	"sort"
 	"sync"
 	"time"
 )
+
+var fallbackActiveHours = []int{5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
 
 // hourlyBudget 是一天 24 小時、每小時分配到的請求次數。
 type hourlyBudget [24]int
@@ -70,6 +73,23 @@ func computeHourlyActivity(departures, arrivals []FlightRecord) [24]int {
 	return activity
 }
 
+func distributeEvenly(hours []int, totalCalls int) hourlyBudget {
+	var budget hourlyBudget
+	if totalCalls <= 0 || len(hours) == 0 {
+		return budget
+	}
+
+	base := totalCalls / len(hours)
+	remainder := totalCalls % len(hours)
+	for i, h := range hours {
+		budget[h] = base
+		if i < remainder {
+			budget[h]++
+		}
+	}
+	return budget
+}
+
 // computeHourlyBudget 把 totalCalls（一天總共能打幾次）依 activity 的比例分配到 24 小時，
 // 完全沒有活動的小時分配 0（直接跳過，不是「至少打一次」）。
 // 用最大餘數法（largest remainder method）分配，確保 24 小時總和「剛好」等於 totalCalls，
@@ -88,15 +108,7 @@ func computeHourlyBudget(activity [24]int, totalCalls int) hourlyBudget {
 	// 完全沒有 FIDS 資料可用（例如程式剛啟動、FIDS 還沒抓到第一筆）——
 	// 退回「24 小時平均分配」，不要讓 OpenSky 完全停擺在等資料的這段時間。
 	if sumActivity == 0 {
-		base := totalCalls / 24
-		remainder := totalCalls - base*24
-		for h := 0; h < 24; h++ {
-			budget[h] = base
-			if h < remainder {
-				budget[h]++
-			}
-		}
-		return budget
+		return distributeEvenly(fallbackActiveHours, totalCalls)
 	}
 
 	type frac struct {
@@ -164,6 +176,21 @@ type openSkyScheduler struct {
 	currentHour  int
 }
 
+func (b hourlyBudget) total() int {
+	total := 0
+	for _, v := range b {
+		total += v
+	}
+	return total
+}
+
+func (b hourlyBudget) logTable(prefix string) {
+	log.Printf("%s hourly budget total=%d", prefix, b.total())
+	for h := 0; h < 24; h++ {
+		log.Printf("%s %02d:00-%02d:59 => %d calls", prefix, h, h, b[h])
+	}
+}
+
 func newOpenSkyScheduler(dailyCredits, creditCost int) *openSkyScheduler {
 	return &openSkyScheduler{dailyCredits: dailyCredits, creditCost: creditCost, currentDay: -1}
 }
@@ -180,6 +207,8 @@ func (s *openSkyScheduler) refreshIfNeeded(now time.Time, departures, arrivals [
 	s.budget = computeHourlyBudget(activity, totalCalls)
 	s.currentHour = now.Hour()
 	s.calledThisHr = 0
+	log.Printf("OpenSky scheduler refreshed for %s: dailyCredits=%d creditCost=%d totalCalls=%d", now.Format("2006-01-02"), s.dailyCredits, s.creditCost, totalCalls)
+	s.budget.logTable("OpenSky scheduler")
 }
 
 // nextDelay 回傳「距離下一次可以打 OpenSky 還要等多久」。

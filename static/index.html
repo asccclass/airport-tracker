@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>桃園國際機場 · 即時起降追蹤</title>
+<title>桃園國際機場 即時航班與空域追蹤</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://www.youtube.com/iframe_api"></script>
@@ -18,19 +18,28 @@
     --accent: #ffce54;
     --live: #ff3b3b;
     --green: #35d07f;
+    --atc-expanded-width: 30%;
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; height: 100%; width: 100%;
-    background: var(--bg); color: var(--text);
-    font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+    margin: 0;
+    width: 100%;
+    height: 100%;
     overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
   }
-  #app { display: flex; flex-direction: column; height: 100%; }
-
-  /* ---------- 頂部狀態列 ---------- */
+  #app {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+  }
   #topbar {
-    display: flex; align-items: center; gap: 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
     padding: 8px 16px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
@@ -38,188 +47,376 @@
     flex-shrink: 0;
   }
   .live-badge {
-    display: flex; align-items: center; gap: 5px;
-    background: var(--live); color: #fff;
-    font-weight: 700; font-size: 11px;
-    padding: 3px 8px; border-radius: 3px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--live);
+    color: #fff;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 3px;
     letter-spacing: 0.5px;
   }
   .live-badge .blink {
-    width: 6px; height: 6px; border-radius: 50%; background: #fff;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fff;
     animation: blink 1.4s infinite;
   }
   @keyframes blink { 50% { opacity: 0.2; } }
   #airport-name { font-weight: 600; letter-spacing: 0.5px; }
   #clock { color: var(--text-dim); font-variant-numeric: tabular-nums; }
   .sep { width: 1px; height: 14px; background: var(--border); }
-  #conn-status { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
-  #conn-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); }
-  #conn-status.live .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  #conn-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+  }
+  #conn-status .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-dim);
+  }
   #conn-status.live { color: var(--green); }
+  #conn-status.live .dot {
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+  }
+  .translate-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-dim);
+  }
+  .translate-toolbar button {
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .translate-toolbar button:hover { border-color: var(--accent); }
+  .translate-toolbar button.is-live,
+  .translate-toolbar button.is-testing {
+    border-color: var(--green);
+    color: var(--green);
+  }
+  .translate-toolbar-status {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
   #count { margin-left: auto; color: var(--text-dim); }
   #count b { color: var(--text); font-weight: 600; }
-
-  /* ---------- 地圖 ---------- */
-  #map-wrap { flex: 1; position: relative; min-height: 0; overflow: hidden; }
-  #map { position: absolute; inset: 0; background: #05070c; }
-
-  .plane-tag {
-    background: rgba(30, 24, 4, 0.88);
-    border: 1px solid var(--accent);
-    border-radius: 3px;
-    padding: 3px 6px;
-    font-size: 10.5px; line-height: 1.35;
-    color: #ffe9a8;
-    white-space: nowrap;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  #map-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
-  .plane-tag .cs { font-weight: 700; color: var(--accent); }
-  .plane-tag .sub { color: #d8c48a; font-size: 9.5px; }
-
+  #map { position: absolute; inset: 0; background: #05070c; }
+  .plane-tag {
+    position: relative;
+    width: 0;
+    height: 0;
+    overflow: visible;
+    cursor: pointer;
+  }
+  .plane-tag-aircraft {
+    position: absolute;
+    left: -15px;
+    top: -25px;
+    width: 30px;
+    height: 30px;
+    transform-origin: 50% 50%;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.45));
+    pointer-events: none;
+  }
+  .plane-tag-aircraft svg { width: 100%; height: 100%; display: block; }
+  .plane-tag-label {
+    position: absolute;
+    left: -19px;
+    top: 4px;
+    min-width: 38px;
+    padding: 3px 5px 4px;
+    background: #ffd229;
+    border: 1px solid rgba(92, 73, 0, 0.35);
+    border-radius: 4px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+    text-align: center;
+    white-space: nowrap;
+    line-height: 1.05;
+  }
+  .plane-tag-label::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: -6px;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 6px solid #ffd229;
+  }
+  .plane-tag-flight {
+    font-size: 12px;
+    font-weight: 800;
+    color: #141414;
+    letter-spacing: 0.2px;
+  }
+  .plane-tag-place {
+    margin-top: 2px;
+    font-size: 9px;
+    font-weight: 700;
+    color: #2e2e2e;
+    letter-spacing: 0.5px;
+  }
   .leaflet-popup-content-wrapper {
-    background: var(--panel); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
   }
   .leaflet-popup-tip { background: var(--panel); }
-  .popup-row { font-size: 12px; display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; }
-  .popup-row span:first-child { color: var(--text-dim); }
   .popup-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--accent); }
-
-  /* ---------- 底部 FIDS 起降表 ---------- */
-  #fids {
-    display: flex; flex-shrink: 0;
-    height: 34%; min-height: 190px; max-height: 260px;
-    border-top: 1px solid var(--border);
-    background: var(--panel-2);
+  .popup-row {
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 1px 0;
   }
-  .fids-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .fids-panel + .fids-panel { border-left: 1px solid var(--border); }
-  .fids-head {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 14px;
-    background: var(--panel);
-    font-size: 12px; font-weight: 700; letter-spacing: 0.5px;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .fids-head .arrow-dep { color: var(--accent); }
-  .fids-head .arrow-arr { color: var(--green); }
-  .fids-head .updated { margin-left: auto; font-weight: 400; color: var(--text-dim); font-size: 10.5px; }
-
-  table.fids-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-  table.fids-table th {
-    text-align: left; color: var(--text-dim); font-weight: 500;
-    padding: 5px 10px; font-size: 10px; letter-spacing: 0.5px;
-    position: sticky; top: 0; background: var(--panel-2);
-  }
-  table.fids-table td { padding: 5px 10px; border-top: 1px solid var(--border); white-space: nowrap; }
-  .fids-body-wrap { overflow-y: auto; flex: 1; }
-
-  .fids-empty {
-    padding: 22px 16px; text-align: center;
-    color: var(--text-dim); font-size: 12px; line-height: 1.7;
-  }
-  .fids-empty b { color: var(--text); }
-  .fids-empty.hidden { display: none; }
-
-  .status-cancel { color: var(--live); font-weight: 700; }
-  .status-delay { color: var(--accent); font-weight: 600; }
-  .status-normal { color: var(--text-dim); }
-
-  /* 離境/入境清單裡「離現在時間最近」的那一筆，各用不同顏色標出來 */
-  tr.focus-dep { background: rgba(255, 206, 84, 0.14); box-shadow: inset 3px 0 0 var(--accent); }
-  tr.focus-dep td:first-child { color: var(--accent); font-weight: 700; }
-  tr.focus-arr { background: rgba(53, 208, 127, 0.14); box-shadow: inset 3px 0 0 var(--green); }
-  tr.focus-arr td:first-child { color: var(--green); font-weight: 700; }
-
-  .sched-old { color: var(--text-dim); text-decoration: line-through; font-size: 10px; display: block; }
-  .sched-new { color: var(--green); font-weight: 600; }
-
-  /* ---------- 塔台通訊/即時影像小工具（衛星地圖區內，限制在地圖範圍、不蓋住上下列） ---------- */
+  .popup-row span:first-child { color: var(--text-dim); }
   .atc-widget {
-    position: absolute; z-index: 900;
-    background: rgba(10, 16, 28, 0.92);
+    position: absolute;
+    z-index: 900;
+    background: transparent;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 8px;
-    display: flex; flex-direction: column; gap: 6px;
-    box-shadow: 0 2px 14px rgba(0,0,0,0.6);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.6);
     width: 176px;
-    transition: left 0.25s ease, top 0.25s ease, bottom 0.25s ease,
-                width 0.25s ease, height 0.25s ease, padding 0.25s ease, border-radius 0.25s ease;
+    overflow: hidden;
+    transition: left 0.25s ease, top 0.25s ease, bottom 0.25s ease, width 0.25s ease, height 0.25s ease, padding 0.25s ease, border-radius 0.25s ease;
   }
   #atc-widget-1 { left: 12px; top: 12px; }
   #atc-widget-2 { right: 12px; bottom: 12px; }
-
-  /* 展開時貼齊地圖區域左邊或右邊（依 dock-left / dock-right），上下滿版；
-     兩個小工具停靠方向不同，所以可以同時展開，不會互相重疊 */
   .atc-widget.expanded {
-    top: 0;
-    width: 33%;
+    width: var(--atc-expanded-width);
+    max-width: var(--atc-expanded-width);
     height: 100%;
     padding: 0;
     box-shadow: none;
+    border-color: transparent;
+    overflow: hidden;
   }
-  .atc-widget.expanded.dock-left {
-    left: 0; right: auto; bottom: auto;
-    border-radius: 0 10px 10px 0;
-  }
-  .atc-widget.expanded.dock-right {
-    right: 0; left: auto; bottom: auto;
-    border-radius: 10px 0 0 10px;
-  }
+  .atc-widget.expanded.dock-left { inset: 0 auto 0 0; border-radius: 0 10px 10px 0; }
+  .atc-widget.expanded.dock-right { inset: 0 0 0 auto; border-radius: 10px 0 0 10px; }
   .atc-player-wrap {
-    width: 100%; height: 90px;
-    border-radius: 4px; overflow: hidden; flex-shrink: 0;
-    background: #000;
+    width: 100%;
+    height: 90px;
+    border-radius: 4px;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: transparent;
+  }
+  .atc-player-mount,
+  .atc-player-wrap iframe {
+    width: 100%;
+    height: 100%;
+    background: transparent;
   }
   .atc-widget.expanded .atc-player-wrap {
-    flex: 1 1 auto; height: 100%; width: 100%;
+    flex: 1 1 auto;
+    height: 100%;
+    width: 100%;
     border-radius: inherit;
   }
-
-  /* 縮小狀態：控制按鈕正常排在影像下方 */
+  .atc-widget.expanded .atc-player-mount { height: 100%; }
   .atc-controls { display: flex; gap: 6px; }
   .atc-controls button {
     flex: 1;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    background: var(--panel); color: var(--text);
-    border: 1px solid var(--border); border-radius: 5px;
-    padding: 5px 6px; font-size: 11px; cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 5px 6px;
+    font-size: 11px;
+    cursor: pointer;
     white-space: nowrap;
   }
   .atc-controls button:hover { border-color: var(--accent); }
   .atc-audio-toggle.on { color: var(--green); border-color: var(--green); }
-
   .atc-credit { font-size: 9px; color: var(--text-dim); text-align: center; }
   .atc-credit a { color: var(--text-dim); }
-
-  /* 展開狀態：只留影像，控制按鈕變成浮在影像右上角的小圖示、不佔版面，字幕列隱藏 */
   .atc-widget.expanded .atc-credit { display: none; }
   .atc-widget.expanded .atc-controls {
-    position: absolute; top: 8px; right: 8px; z-index: 2;
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
     gap: 4px;
     background: transparent;
   }
   .atc-widget.expanded .atc-controls button {
     flex: none;
-    padding: 5px 7px; font-size: 10px;
+    padding: 5px 7px;
+    font-size: 10px;
     background: rgba(10, 16, 28, 0.75);
     backdrop-filter: blur(2px);
   }
+  #fids {
+    display: flex;
+    flex-shrink: 0;
+    height: 34%;
+    min-height: 190px;
+    max-height: 260px;
+    border-top: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  .fids-panel {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .translate-fids-panel {
+    flex: 0 0 33%;
+    max-width: 33%;
+    min-width: 260px;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel-2);
+    border-left: 1px solid var(--border);
+  }
+  .fids-panel + .fids-panel { border-left: 1px solid var(--border); }
+  .fids-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    background: var(--panel);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .fids-head .arrow-dep { color: var(--accent); }
+  .fids-head .arrow-arr { color: var(--green); }
+  .fids-head .updated {
+    margin-left: auto;
+    font-weight: 400;
+    color: var(--text-dim);
+    font-size: 10.5px;
+  }
+  .fids-body-wrap { overflow-y: auto; flex: 1; }
+  table.fids-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11.5px;
+  }
+  table.fids-table th {
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: 500;
+    padding: 5px 10px;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    position: sticky;
+    top: 0;
+    background: var(--panel-2);
+  }
+  table.fids-table td {
+    padding: 5px 10px;
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .fids-empty {
+    padding: 22px 16px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .fids-empty.hidden { display: none; }
+  .fids-empty b { color: var(--text); }
+  .status-cancel { color: var(--live); font-weight: 700; }
+  .status-delay { color: var(--accent); font-weight: 600; }
+  .status-normal { color: var(--text-dim); }
+  tr.focus-dep {
+    background: rgba(255, 206, 84, 0.14);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  tr.focus-dep td:first-child { color: var(--accent); font-weight: 700; }
+  tr.focus-arr {
+    background: rgba(53, 208, 127, 0.14);
+    box-shadow: inset 3px 0 0 var(--green);
+  }
+  tr.focus-arr td:first-child { color: var(--green); font-weight: 700; }
+  .sched-old {
+    color: var(--text-dim);
+    text-decoration: line-through;
+    font-size: 10px;
+    display: block;
+  }
+  .sched-new { color: var(--green); font-weight: 600; }
+  .translate-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    height: 100%;
+    padding: 12px 14px;
+  }
+  .translate-live { color: var(--accent); font-size: 11px; min-height: 16px; }
+  .translate-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    overflow-y: auto;
+  }
+  .translate-item {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .translate-source { font-size: 11px; color: #c9d2e5; line-height: 1.45; }
+  .translate-result { margin-top: 4px; font-size: 12px; color: #fff4c0; line-height: 1.5; }
+  .translate-empty { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
 </style>
 </head>
 <body>
 <div id="app">
-
   <div id="topbar">
     <div class="live-badge"><span class="blink"></span>LIVE</div>
-    <div id="airport-name">桃園國際機場 · TPE / RCTP</div>
+    <div id="airport-name">桃園國際機場 TPE / RCTP</div>
     <div class="sep"></div>
     <div id="clock">--:--:--</div>
     <div class="sep"></div>
-    <div id="conn-status"><span class="dot"></span><span id="conn-text">連線中…</span></div>
-    <div id="count">空域內飛機：<b id="count-num">–</b></div>
+    <div id="conn-status"><span class="dot"></span><span id="conn-text">連線中</span></div>
+    <div class="sep"></div>
+    <div class="translate-toolbar">
+      <button type="button" id="translate-toggle">啟動分頁音訊翻譯</button>
+      <button type="button" id="audio-test-toggle">音源檢查 / 測試</button>
+      <span class="translate-toolbar-status" id="translate-status">待機中</span>
+    </div>
+    <div id="count">目前空域飛機數 <b id="count-num">0</b></div>
   </div>
 
   <div id="map-wrap">
@@ -228,96 +425,121 @@
     <div id="atc-widget-1" class="atc-widget dock-left" data-video-id="My-tDEttvXg" data-default-audio="on">
       <div class="atc-player-wrap"><div class="atc-player-mount"></div></div>
       <div class="atc-controls">
-        <button class="atc-audio-toggle">🔇 開聲音</button>
-        <button class="atc-size-toggle">⤢ 放大</button>
+        <button class="atc-audio-toggle">開啟聲音</button>
+        <button class="atc-size-toggle">展開視窗</button>
       </div>
-      <div class="atc-credit">北跑道塔台通訊 · 音源 <a href="https://www.youtube.com/@TWSkyWave" target="_blank" rel="noopener">TWSkyWave 空中電波</a></div>
+      <div class="atc-credit">塔台直播來源：<a href="https://www.youtube.com/@TWSkyWave" target="_blank" rel="noopener">TWSkyWave YouTube 頻道</a></div>
     </div>
 
     <div id="atc-widget-2" class="atc-widget dock-right" data-video-id="91PfFoqvuUk">
       <div class="atc-player-wrap"><div class="atc-player-mount"></div></div>
       <div class="atc-controls">
-        <button class="atc-audio-toggle">🔇 開聲音</button>
-        <button class="atc-size-toggle">⤢ 放大</button>
+        <button class="atc-audio-toggle">開啟聲音</button>
+        <button class="atc-size-toggle">展開視窗</button>
       </div>
-      <div class="atc-credit">機場即時影像 · <a href="https://www.youtube.com/watch?v=91PfFoqvuUk" target="_blank" rel="noopener">YouTube Live</a></div>
+      <div class="atc-credit">機場直播來源：<a href="https://www.youtube.com/watch?v=91PfFoqvuUk" target="_blank" rel="noopener">YouTube Live</a></div>
     </div>
   </div>
 
   <div id="fids">
     <div class="fids-panel">
-      <div class="fids-head"><span class="arrow-dep">&#9650; DEPARTURES</span><span class="updated" id="dep-updated"></span></div>
+      <div class="fids-head"><span class="arrow-dep">&#9650; 離境航班</span><span class="updated" id="dep-updated"></span></div>
       <div class="fids-body-wrap">
         <table class="fids-table">
-          <thead><tr><th>班號</th><th>表定</th><th>目的地</th><th>航廈</th><th>登機門</th><th>狀態</th></tr></thead>
+          <thead><tr><th>航班</th><th>時間</th><th>目的地</th><th>航廈</th><th>登機門</th><th>狀態</th></tr></thead>
           <tbody id="dep-body"></tbody>
         </table>
-        <div class="fids-empty" id="dep-empty">
-          <b>正在載入桃園機場官方起降資料…</b><br>
-          若持續沒有資料，可能是官方資料源格式異動或連線失敗，請查看伺服器終端機的 log。
+        <div class="fids-empty hidden" id="dep-empty">
+          <b>目前沒有可顯示的桃園機場離境航班。</b><br>
+          如果稍後仍未顯示資料，請確認資料來源是否正常，並查看伺服器 log。
         </div>
       </div>
     </div>
+
     <div class="fids-panel">
-      <div class="fids-head"><span class="arrow-arr">&#9660; ARRIVALS</span><span class="updated" id="arr-updated"></span></div>
+      <div class="fids-head"><span class="arrow-arr">&#9660; 入境航班</span><span class="updated" id="arr-updated"></span></div>
       <div class="fids-body-wrap">
         <table class="fids-table">
-          <thead><tr><th>班號</th><th>表定</th><th>起飛地</th><th>航廈</th><th>行李轉盤</th><th>狀態</th></tr></thead>
+          <thead><tr><th>航班</th><th>時間</th><th>出發地</th><th>航廈</th><th>行李轉盤</th><th>狀態</th></tr></thead>
           <tbody id="arr-body"></tbody>
         </table>
-        <div class="fids-empty" id="arr-empty">
-          <b>正在載入桃園機場官方起降資料…</b><br>
-          若持續沒有資料，可能是官方資料源格式異動或連線失敗，請查看伺服器終端機的 log。
+        <div class="fids-empty hidden" id="arr-empty">
+          <b>目前沒有可顯示的桃園機場入境航班。</b><br>
+          如果稍後仍未顯示資料，請確認資料來源是否正常，並查看伺服器 log。
         </div>
       </div>
     </div>
-  </div>
 
+    <div class="translate-fids-panel">
+      <div class="fids-head"><span>即時翻譯</span><span class="updated" id="translate-updated">ATC 字幕</span></div>
+      <section class="translate-panel" id="translate-panel">
+        <div class="translate-live" id="translate-live"></div>
+        <div class="translate-list" id="translate-list">
+          <div class="translate-empty" id="translate-empty">啟動翻譯後，這裡會顯示塔台通話的即時中文字幕。</div>
+        </div>
+      </section>
+    </div>
+  </div>
 </div>
 
 <script>
-/* ---------- 地圖：改用衛星影像底圖，貼近空拍視角 ---------- */
 const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([25.077, 121.233], 12);
-L.control.zoom({ position: 'topright' }).addTo(map); // 縮放按鈕移到右上角，避開左上角的塔台通訊小工具
+L.control.zoom({ position: 'topright' }).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', { maxZoom: 19, opacity: 0.0 }).addTo(map);
 
-L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-  maxZoom: 19,
-}).addTo(map);
-// 疊一層淡淡的地名圖層，方便辨認方位（純衛星影像常常看不出地名）
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-  maxZoom: 19, opacity: 0.0,
-}).addTo(map);
-
-const markers = new Map(); // icao24 -> marker
+const markers = new Map();
 
 function fmtAlt(m) {
-  if (m == null) return '–';
-  return Math.round(m * 3.28084).toLocaleString() + 'ft';
+  if (m == null) return '--';
+  return `${Math.round(m * 3.28084).toLocaleString()}ft`;
 }
+
 function fmtSpeed(mps) {
-  if (mps == null) return '–';
-  return Math.round(mps * 1.94384) + 'kt';
+  if (mps == null) return '--';
+  return `${Math.round(mps * 1.94384)}kt`;
+}
+
+function escHtml(s) {
+  return (s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function escapeHtml(s) {
+  return escHtml(s);
 }
 
 function tagIcon(ac) {
-  const label = ac.callsign || ac.icao24;
-  const sub = `${fmtAlt(ac.baro_altitude)} ${fmtSpeed(ac.velocity)}`;
+  const callsign = ac.callsign || ac.icao24 || '?';
+  const flight = callsign.replace(/\s+/g, '').slice(0, 8);
+  const dest = (ac.place_zh || ac.origin_country || 'UNK').replace(/\s+/g, ' ').trim().slice(0, 10);
+  const heading = ac.true_track ?? 0;
   return L.divIcon({
     className: '',
-    html: `<div class="plane-tag"><span class="cs">${label}</span><br><span class="sub">${sub}</span></div>`,
+    html: `
+      <div class="plane-tag">
+        <div class="plane-tag-aircraft" style="transform: rotate(${heading}deg)">
+          <svg viewBox="0 0 64 64" aria-hidden="true">
+            <path fill="#ffffff" d="M34.8 4.6c2.3.6 4 2.7 4.1 5.2l.3 15.7 14.5 7.8c2 1.1 2.9 3.5 2.1 5.7-.7 2.2-2.9 3.7-5.2 3.5l-11.6-.9-1.1 16.2 6.4 3.9c1.4.9 2 2.6 1.4 4.2-.7 1.8-2.7 2.9-4.5 2.4L32 65l-9.6 3.3c-1.8.6-3.8-.5-4.5-2.4-.6-1.6 0-3.3 1.4-4.2l6.4-3.9-1.1-16.2-11.6.9c-2.3.2-4.4-1.3-5.2-3.5-.8-2.2.1-4.6 2.1-5.7l14.5-7.8.3-15.7c0-2.5 1.7-4.6 4.1-5.2 2.8-.8 5.6.8 6 3.7l3.2 20.6 2-1.1L34.8 8.3c-.4-2 .8-3.9 2.8-3.7z"/>
+          </svg>
+        </div>
+        <div class="plane-tag-label">
+          <div class="plane-tag-flight">${escHtml(flight)}</div>
+          <div class="plane-tag-place">${escHtml(dest)}</div>
+        </div>
+      </div>`,
     iconSize: null,
-    iconAnchor: [-6, 8],
+    iconAnchor: [0, 12],
   });
 }
 
 function popupHtml(ac) {
   const label = ac.callsign || ac.icao24;
   return `
-    <div class="popup-title">${label}</div>
-    <div class="popup-row"><span>國籍</span><span>${ac.origin_country || '–'}</span></div>
+    <div class="popup-title">${escHtml(label)}</div>
+    <div class="popup-row"><span>國籍</span><span>${escHtml(ac.origin_country || '--')}</span></div>
     <div class="popup-row"><span>高度</span><span>${fmtAlt(ac.baro_altitude)}</span></div>
     <div class="popup-row"><span>地速</span><span>${fmtSpeed(ac.velocity)}</span></div>
-    <div class="popup-row"><span>狀態</span><span>${ac.on_ground ? '地面' : '飛行中'}</span></div>
+    <div class="popup-row"><span>狀態</span><span>${ac.on_ground ? '地面' : '空中'}</span></div>
   `;
 }
 
@@ -325,9 +547,7 @@ function upsertAircraft(ac) {
   if (ac.latitude == null || ac.longitude == null) return;
   let marker = markers.get(ac.icao24);
   if (!marker) {
-    marker = L.marker([ac.latitude, ac.longitude], { icon: tagIcon(ac) })
-      .bindPopup(popupHtml(ac))
-      .addTo(map);
+    marker = L.marker([ac.latitude, ac.longitude], { icon: tagIcon(ac) }).bindPopup(popupHtml(ac)).addTo(map);
     markers.set(ac.icao24, marker);
   } else {
     marker.setLatLng([ac.latitude, ac.longitude]);
@@ -351,7 +571,6 @@ function applySnapshot(snapshot) {
   document.getElementById('count-num').textContent = snapshot.aircraft.length;
 }
 
-/* ---------- 連線狀態 ---------- */
 function setStatus(live, text) {
   const el = document.getElementById('conn-status');
   el.classList.toggle('live', live);
@@ -363,71 +582,123 @@ function connect() {
   es.addEventListener('snapshot', (e) => {
     try {
       applySnapshot(JSON.parse(e.data));
-      setStatus(true, '即時更新中');
+      setStatus(true, '即時連線中');
     } catch (err) {
-      console.error('解析資料失敗', err);
+      console.error('解析飛機快照失敗', err);
     }
   });
-  es.onerror = () => setStatus(false, '連線中斷，重試中…');
-  es.onopen = () => setStatus(true, '即時更新中');
+  es.onerror = () => setStatus(false, '連線中斷，重新嘗試中');
+  es.onopen = () => setStatus(true, '即時連線中');
 }
 connect();
 
-/* ---------- FIDS 起降時刻表 ---------- */
-function escapeHtml(s) {
-  return (s ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-}
-
 function schedCell(rec) {
-  // 表定時間跟預計時間不同就用刪除線+綠字表示變動（跟原本畫面的呈現方式一致）
   if (rec.est_time && rec.sched_time && rec.est_time !== rec.sched_time) {
     return `<span class="sched-old">${escapeHtml(rec.sched_time)}</span><span class="sched-new">${escapeHtml(rec.est_time)}</span>`;
   }
-  return escapeHtml(rec.sched_time || rec.est_time || '–');
+  return escapeHtml(rec.sched_time || rec.est_time || '--');
 }
 
 function statusClass(status) {
-  const s = status || '';
-  if (s.includes('取消') || s.toUpperCase().includes('CANCEL')) return 'status-cancel';
-  if (s.includes('延誤') || s.toUpperCase().includes('DELAY')) return 'status-delay';
+  const s = String(status || '').toUpperCase();
+  if (s.includes('取消') || s.includes('CANCEL')) return 'status-cancel';
+  if (s.includes('延誤') || s.includes('DELAY')) return 'status-delay';
   return 'status-normal';
+}
+
+function parseTimeToday(hhmm) {
+  if (!hhmm || hhmm.length < 5) return null;
+  const now = new Date();
+  const taipeiOffsetMin = 8 * 60;
+  const nowMinutesToday = (now.getUTCHours() * 60 + now.getUTCMinutes() + taipeiOffsetMin) % 1440;
+  const [hStr, mStr] = hhmm.split(':');
+  const hour = parseInt(hStr, 10);
+  const minute = parseInt(mStr, 10);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+  const targetMinutesToday = hour * 60 + minute;
+  const result = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour - 8, minute));
+  if (targetMinutesToday - nowMinutesToday > 720) result.setUTCDate(result.getUTCDate() - 1);
+  if (nowMinutesToday - targetMinutesToday > 720) result.setUTCDate(result.getUTCDate() + 1);
+  return result;
+}
+
+function effectiveTime(rec) {
+  return rec.est_time || rec.sched_time || '';
+}
+
+function findClosestIndex(records) {
+  const now = Date.now();
+  let closestFutureIdx = -1;
+  let closestFutureDiff = Infinity;
+  let closestPastIdx = -1;
+  let closestPastDiff = Infinity;
+  records.forEach((r, i) => {
+    const t = parseTimeToday(effectiveTime(r));
+    if (!t) return;
+    const diffMs = t.getTime() - now;
+    if (diffMs >= 0) {
+      if (diffMs < closestFutureDiff) {
+        closestFutureDiff = diffMs;
+        closestFutureIdx = i;
+      }
+      return;
+    }
+    const pastDiff = Math.abs(diffMs);
+    if (pastDiff < closestPastDiff) {
+      closestPastDiff = pastDiff;
+      closestPastIdx = i;
+    }
+  });
+  return closestFutureIdx !== -1 ? closestFutureIdx : closestPastIdx;
+}
+
+function fmtMinuteDelta(rec) {
+  const t = parseTimeToday(effectiveTime(rec));
+  if (!t) return '';
+  const diffMin = Math.round((t.getTime() - Date.now()) / 60000);
+  if (diffMin === 0) return '現在';
+  if (diffMin > 0) return `${diffMin} 分鐘後`;
+  return `${Math.abs(diffMin)} 分鐘前`;
 }
 
 function renderFidsRows(tbodyId, emptyId, records, thirdColKey, focusClass) {
   const tbody = document.getElementById(tbodyId);
   const empty = document.getElementById(emptyId);
-
   if (!records || records.length === 0) {
     tbody.innerHTML = '';
     empty.classList.remove('hidden');
     return;
   }
   empty.classList.add('hidden');
-
-  // 清單本身已經是「離現在時間最近」排最前面（離境=由近到遠，入境=由新到舊），
-  // 所以第一筆就是要特別標色的那一筆，不用另外比對時間。
+  const focusIdx = findClosestIndex(records);
   tbody.innerHTML = records.map((r, i) => `
-    <tr class="${i === 0 ? focusClass : ''}">
+    <tr class="${i === focusIdx ? focusClass : ''}" data-focus-row="${i === focusIdx ? 'true' : 'false'}">
       <td>${escapeHtml(r.flight_no)}</td>
       <td>${schedCell(r)}</td>
       <td>${escapeHtml(r.place_zh)}</td>
       <td>${escapeHtml(r.terminal)}</td>
       <td>${escapeHtml(thirdColKey === 'gate' ? r.gate : r.baggage)}</td>
-      <td class="${statusClass(r.status_zh)}">${escapeHtml(r.status_zh)}</td>
+      <td class="${statusClass(r.status_zh)}">${escapeHtml(r.status_zh)}${i === focusIdx ? ` (${escapeHtml(fmtMinuteDelta(r))})` : ''}</td>
     </tr>
   `).join('');
+  const focusRow = tbody.querySelector('tr[data-focus-row="true"]');
+  const scrollWrap = tbody.closest('.fids-body-wrap');
+  if (focusRow && scrollWrap) {
+    const wrapRect = scrollWrap.getBoundingClientRect();
+    const rowRect = focusRow.getBoundingClientRect();
+    const offset = rowRect.top - wrapRect.top - (wrapRect.height / 2) + (rowRect.height / 2);
+    scrollWrap.scrollTop += offset;
+  }
 }
 
 function fmtUpdatedAt(iso) {
   try {
     const d = new Date(iso);
-    const fmt = new Intl.DateTimeFormat('zh-TW', {
-      timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false,
-    });
-    return '更新於 ' + fmt.format(d);
-  } catch { return ''; }
+    const fmt = new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false });
+    return `更新時間 ${fmt.format(d)}`;
+  } catch {
+    return '';
+  }
 }
 
 function applyFidsSnapshot(snapshot) {
@@ -447,15 +718,9 @@ function connectFids() {
       console.error('解析 FIDS 資料失敗', err);
     }
   });
-  // FIDS 連線失敗不影響地圖那條 SSE，兩者是獨立連線；
-  // 失敗時保留原本的「尚未串接」版位文字，不用額外處理。
 }
 connectFids();
 
-/* ---------- 塔台通訊/即時影像小工具（YouTube 直播嵌入，預設靜音，點按鈕才開聲音） ----------
-   用同一套邏輯管理任意數量的小工具（目前是左上角塔台通訊 dock-left + 右下角機場即時影像 dock-right），
-   每個 .atc-widget 各自獨立播放/靜音；展開時只會收合「同一側」已展開的小工具，
-   左右兩側可以同時展開，不會互相重疊。 */
 const atcWidgets = [];
 
 function setupAtcWidget(widgetEl) {
@@ -472,9 +737,6 @@ function setupAtcWidget(widgetEl) {
     audioOn: false,
     expanded: false,
   };
-
-  // 依目前 .atc-player-wrap 實際大小調整 YouTube iframe 尺寸，
-  // 展開/縮小切換、或視窗大小改變時都要呼叫。
   state.resize = () => {
     if (!state.player || typeof state.player.setSize !== 'function') return;
     const rect = state.wrap.getBoundingClientRect();
@@ -482,18 +744,15 @@ function setupAtcWidget(widgetEl) {
       state.player.setSize(Math.round(rect.width), Math.round(rect.height));
     }
   };
-
-  // 統一在這裡更新按鈕文字/樣式，展開/收合/開關聲音都共用同一套規則，避免各處各寫一次而不一致。
   state.updateAudioBtn = () => {
     if (state.audioOn) {
-      state.audioBtn.textContent = state.expanded ? '🔊' : '🔊 播放中';
+      state.audioBtn.textContent = state.expanded ? '靜音' : '關閉聲音';
       state.audioBtn.classList.add('on');
     } else {
-      state.audioBtn.textContent = state.expanded ? '🔇' : '🔇 開聲音';
+      state.audioBtn.textContent = state.expanded ? '有聲' : '開啟聲音';
       state.audioBtn.classList.remove('on');
     }
   };
-
   state.audioBtn.addEventListener('click', () => {
     if (!state.player || typeof state.player.unMute !== 'function') return;
     if (!state.audioOn) {
@@ -507,56 +766,39 @@ function setupAtcWidget(widgetEl) {
     }
     state.updateAudioBtn();
   });
-
   state.sizeBtn.addEventListener('click', () => {
     const expanding = !state.expanded;
     if (expanding) {
-      // 只收合「同一側」已展開的小工具，左右兩側可以同時展開
       atcWidgets.forEach((other) => {
-        if (other !== state && other.expanded && other.dockSide === state.dockSide) {
-          collapseAtcWidget(other);
-        }
+        if (other !== state && other.expanded && other.dockSide === state.dockSide) collapseAtcWidget(other);
       });
     }
     state.expanded = expanding;
     widgetEl.classList.toggle('expanded', expanding);
-    // 展開狀態下控制按鈕是浮在影像上的小圖示，文字要精簡；縮小狀態維持完整文字方便閱讀。
-    state.sizeBtn.textContent = expanding ? '⤡' : '⤢ 放大';
+    state.sizeBtn.textContent = expanding ? '收合視窗' : '展開視窗';
     state.updateAudioBtn();
-    // 等 CSS transition（0.25s）跑完、容器尺寸穩定後，再讓 iframe 貼合新尺寸。
     setTimeout(state.resize, 260);
   });
-
   atcWidgets.push(state);
 }
 
 function collapseAtcWidget(state) {
   state.expanded = false;
   state.widgetEl.classList.remove('expanded');
-  state.sizeBtn.textContent = '⤢ 放大';
+  state.sizeBtn.textContent = '展開視窗';
   state.updateAudioBtn();
   setTimeout(state.resize, 260);
 }
 
 document.querySelectorAll('.atc-widget').forEach(setupAtcWidget);
 
-// YouTube IFrame API 會在載入完成後自動呼叫這個全域函式名稱，不能改名。
-// 這裡一次幫所有已註冊的小工具建立各自獨立的播放器。
-// 預設靜音的小工具直接靜音自動播放；預設要開聲音的（data-default-audio="on"）
-// 會先「嘗試」有聲音自動播放，但瀏覽器政策不保證會放行——
-// 如果 0.8 秒後偵測到其實沒有真的播放起來（代表被瀏覽器擋下來了），
-// 就自動退回靜音狀態，並讓按鈕誠實顯示「開聲音」，不會顯示播放中但其實沒聲音的誤導畫面。
 function onYouTubeIframeAPIReady() {
   atcWidgets.forEach((state) => {
     state.player = new YT.Player(state.mount, {
       height: '90',
       width: '176',
       videoId: state.videoId,
-      playerVars: {
-        autoplay: 1,
-        mute: state.defaultAudioOn ? 0 : 1,
-        playsinline: 1, rel: 0, modestbranding: 1,
-      },
+      playerVars: { autoplay: 1, mute: state.defaultAudioOn ? 0 : 1, playsinline: 1, rel: 0, modestbranding: 1 },
       events: {
         onReady: (e) => {
           if (state.defaultAudioOn) {
@@ -565,9 +807,8 @@ function onYouTubeIframeAPIReady() {
             e.target.playVideo();
             state.audioOn = true;
             state.updateAudioBtn();
-            // 驗證瀏覽器真的有讓「有聲音自動播放」通過，沒有的話就退回靜音狀態。
             setTimeout(() => {
-              if (e.target.getPlayerState() !== 1 /* YT.PlayerState.PLAYING */) {
+              if (e.target.getPlayerState() !== 1) {
                 e.target.mute();
                 state.audioOn = false;
                 state.updateAudioBtn();
@@ -578,10 +819,10 @@ function onYouTubeIframeAPIReady() {
             e.target.mute();
             e.target.playVideo();
           }
-          state.resize(); // 讓 iframe 尺寸一開始就貼合容器，而不是用建構子裡的固定值
+          state.resize();
         },
         onError: () => {
-          state.audioBtn.textContent = '直播暫時無法載入';
+          state.audioBtn.textContent = '直播載入失敗';
         },
       },
     });
@@ -589,19 +830,371 @@ function onYouTubeIframeAPIReady() {
 }
 
 window.addEventListener('resize', () => {
-  atcWidgets.forEach((state) => { if (state.expanded) state.resize(); });
+  atcWidgets.forEach((state) => {
+    if (state.expanded) state.resize();
+  });
 });
 
-/* ---------- 時鐘 ---------- */
 function tickClock() {
   const now = new Date();
-  const fmt = new Intl.DateTimeFormat('zh-TW', {
-    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  });
-  document.getElementById('clock').textContent = fmt.format(now) + ' (台北時間)';
+  const fmt = new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  document.getElementById('clock').textContent = `${fmt.format(now)} (台北時間)`;
 }
 tickClock();
 setInterval(tickClock, 1000);
+
+const translateState = {
+  running: false,
+  backendReady: false,
+  captureStream: null,
+  audioContext: null,
+  analyser: null,
+  levelTimer: null,
+  silenceTimer: null,
+  mediaRecorder: null,
+  requestInFlight: false,
+  lastSubmitted: '',
+  lastSpeechAt: 0,
+  audioTestStream: null,
+  audioTestTimer: null,
+};
+
+const translateToggleBtn = document.getElementById('translate-toggle');
+const audioTestToggleBtn = document.getElementById('audio-test-toggle');
+const translateStatusEl = document.getElementById('translate-status');
+const translateLiveEl = document.getElementById('translate-live');
+const translateListEl = document.getElementById('translate-list');
+const translateEmptyEl = document.getElementById('translate-empty');
+
+function setTranslateStatus(text) {
+  if (!translateStatusEl) return;
+  translateStatusEl.textContent = text;
+}
+
+function setTranslateButtonState() {
+  if (!translateToggleBtn) return;
+  translateToggleBtn.textContent = translateState.running ? '停止分頁音訊翻譯' : '啟動分頁音訊翻譯';
+  translateToggleBtn.classList.toggle('is-live', translateState.running);
+}
+
+function setAudioTestButtonState(testing) {
+  if (!audioTestToggleBtn) return;
+  audioTestToggleBtn.classList.toggle('is-testing', testing);
+  audioTestToggleBtn.textContent = testing ? '測試中…' : '音源檢查 / 測試';
+}
+
+function clearSilenceTimer() {
+  if (translateState.silenceTimer) {
+    clearTimeout(translateState.silenceTimer);
+    translateState.silenceTimer = null;
+  }
+}
+
+function armSilenceTimer() {
+  clearSilenceTimer();
+  translateState.silenceTimer = setTimeout(() => {
+    if (!translateState.running) return;
+    if (Date.now() - translateState.lastSpeechAt < 8000) return;
+    setTranslateStatus('尚未收到可辨識的分頁音訊：請確認分享的是目前分頁，並勾選分享分頁音訊');
+  }, 8000);
+}
+
+function stopCaptureStream(stream) {
+  if (!stream) return;
+  stream.getTracks().forEach((track) => track.stop());
+}
+
+async function requestTabAudioStream() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    throw new Error('browser-display-capture-unsupported');
+  }
+  setTranslateStatus('請在分享視窗選擇目前分頁，並勾選分享分頁音訊');
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: true,
+    audio: true,
+    preferCurrentTab: true,
+  });
+  const audioTracks = stream.getAudioTracks();
+  stream.getVideoTracks().forEach((track) => track.stop());
+  if (!audioTracks.length) {
+    stopCaptureStream(stream);
+    throw new Error('tab-audio-missing');
+  }
+  setTranslateStatus('已授權分享分頁音訊，正在建立音源連線');
+  return new MediaStream(audioTracks);
+}
+
+function attachAudioLevelMonitor(stream) {
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioContext.createMediaStreamSource(stream);
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;
+  source.connect(analyser);
+  translateState.audioContext = audioContext;
+  translateState.analyser = analyser;
+  setTranslateStatus('已接上分頁音軌，正在偵測 YouTube 音源');
+  const data = new Uint8Array(analyser.fftSize);
+  const sample = () => {
+    if (!translateState.running || !translateState.analyser) return;
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 1) {
+      const centered = (data[i] - 128) / 128;
+      sum += Math.abs(centered);
+    }
+    const avg = sum / data.length;
+    if (avg > 0.02) translateState.lastSpeechAt = Date.now();
+    translateState.levelTimer = setTimeout(sample, 180);
+  };
+  sample();
+}
+
+function cleanupTranslateCapture() {
+  if (translateState.levelTimer) {
+    clearTimeout(translateState.levelTimer);
+    translateState.levelTimer = null;
+  }
+  clearSilenceTimer();
+  if (translateState.mediaRecorder && translateState.mediaRecorder.state !== 'inactive') {
+    translateState.mediaRecorder.stop();
+  }
+  translateState.mediaRecorder = null;
+  if (translateState.audioContext) {
+    translateState.audioContext.close().catch(() => {});
+    translateState.audioContext = null;
+  }
+  translateState.analyser = null;
+  if (translateState.captureStream) {
+    stopCaptureStream(translateState.captureStream);
+    translateState.captureStream = null;
+  }
+  if (translateLiveEl) translateLiveEl.textContent = '';
+}
+
+async function runAudioLevelCheck(getStream, passText, failText) {
+  let stream;
+  let audioContext;
+  try {
+    stream = await getStream();
+    translateState.audioTestStream = stream;
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(stream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    let peak = 0;
+    const startedAt = Date.now();
+    await new Promise((resolve) => {
+      const sample = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i += 1) {
+          const centered = (data[i] - 128) / 128;
+          sum += Math.abs(centered);
+        }
+        peak = Math.max(peak, sum / data.length);
+        if (Date.now() - startedAt >= 3000) {
+          resolve();
+          return;
+        }
+        translateState.audioTestTimer = setTimeout(sample, 120);
+      };
+      sample();
+    });
+    if (peak > 0.02) {
+      setTranslateStatus(`${passText}（強度 ${peak.toFixed(3)}）`);
+    } else {
+      setTranslateStatus(failText);
+    }
+  } finally {
+    if (translateState.audioTestTimer) {
+      clearTimeout(translateState.audioTestTimer);
+      translateState.audioTestTimer = null;
+    }
+    if (stream) {
+      stopCaptureStream(stream);
+      translateState.audioTestStream = null;
+    }
+    if (audioContext) {
+      audioContext.close().catch(() => {});
+    }
+  }
+}
+
+async function runAudioInputTest() {
+  setAudioTestButtonState(true);
+  try {
+    setTranslateStatus('音源檢查中：請在分享視窗選擇目前分頁，並勾選分享分頁音訊');
+    await runAudioLevelCheck(
+      requestTabAudioStream,
+      '音源檢查通過：已偵測到目前分頁的聲音輸入',
+      '音源檢查未通過：目前分頁幾乎沒有收到聲音，請確認 YouTube 正在播放且已勾選分享分頁音訊',
+    );
+  } catch (err) {
+    console.error('音源檢查失敗', err);
+    if (err && err.message === 'tab-audio-missing') {
+      setTranslateStatus('音源檢查失敗：你沒有勾選分享分頁音訊');
+    } else if (err && err.message === 'browser-display-capture-unsupported') {
+      setTranslateStatus('這個瀏覽器目前不支援分頁音訊擷取');
+    } else {
+      setTranslateStatus('音源檢查失敗：請確認已允許分享目前分頁與音訊');
+    }
+  } finally {
+    setAudioTestButtonState(false);
+  }
+}
+
+async function loadTranslateBackendStatus() {
+  try {
+    const resp = await fetch('/api/translate-status');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    translateState.backendReady = !!data.enabled;
+    if (!translateState.backendReady) {
+      setTranslateStatus('翻譯服務未啟用：請設定 GEMINI_API_KEY');
+      return;
+    }
+    setTranslateStatus('待機中');
+  } catch (err) {
+    console.error('讀取翻譯服務狀態失敗', err);
+    setTranslateStatus('無法確認翻譯服務狀態');
+  }
+}
+
+function appendTranslation(sourceText, resultText) {
+  if (!translateListEl) return;
+  if (translateEmptyEl && translateEmptyEl.parentNode) translateEmptyEl.remove();
+  const item = document.createElement('div');
+  item.className = 'translate-item';
+  item.innerHTML = `
+    <div class="translate-source">${escapeHtml(sourceText)}</div>
+    <div class="translate-result">${escapeHtml(resultText)}</div>
+  `;
+  translateListEl.prepend(item);
+  while (translateListEl.children.length > 6) {
+    translateListEl.removeChild(translateListEl.lastElementChild);
+  }
+}
+
+async function submitAudioChunk(blob) {
+  if (!blob || !blob.size || translateState.requestInFlight) return;
+  if (!translateState.backendReady) {
+    setTranslateStatus('翻譯服務未啟用：請設定 GEMINI_API_KEY');
+    return;
+  }
+  translateState.requestInFlight = true;
+  setTranslateStatus('已接上 YouTube 音源，翻譯中...');
+  if (translateLiveEl) translateLiveEl.textContent = '正在擷取分頁音訊...';
+  try {
+    const resp = await fetch('/api/translate-audio', {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type || 'audio/webm' },
+      body: blob,
+    });
+    if (!resp.ok) {
+      const msg = await resp.text();
+      throw new Error(msg || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    const sourceText = (data.source_text || '').trim();
+    const resultText = (data.result_text || '').trim();
+    if (sourceText) {
+      translateState.lastSpeechAt = Date.now();
+      if (sourceText !== translateState.lastSubmitted) {
+        translateState.lastSubmitted = sourceText;
+        appendTranslation(sourceText, resultText || sourceText);
+      }
+      setTranslateStatus('已接上 YouTube 音源，翻譯中');
+    } else {
+      setTranslateStatus('尚未收到可辨識語音：請確認 YouTube 正在播放 ATC 聲音');
+    }
+    armSilenceTimer();
+  } catch (err) {
+    console.error('即時翻譯失敗', err);
+    setTranslateStatus('翻譯服務暫時不可用');
+  } finally {
+    translateState.requestInFlight = false;
+    if (translateLiveEl) translateLiveEl.textContent = '';
+  }
+}
+
+function pickRecorderMimeType() {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm'];
+  for (const mimeType of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(mimeType)) return mimeType;
+  }
+  return '';
+}
+
+async function startTabAudioTranslation() {
+  const stream = await requestTabAudioStream();
+  const mimeType = pickRecorderMimeType();
+  if (!window.MediaRecorder || !mimeType) {
+    stopCaptureStream(stream);
+    throw new Error('media-recorder-unsupported');
+  }
+  translateState.captureStream = stream;
+  translateState.lastSubmitted = '';
+  translateState.lastSpeechAt = Date.now();
+  translateState.running = true;
+  setTranslateButtonState();
+  setTranslateStatus('已接上 YouTube 音源，正在擷取分頁音訊');
+  attachAudioLevelMonitor(stream);
+  armSilenceTimer();
+  const recorder = new MediaRecorder(stream, { mimeType });
+  translateState.mediaRecorder = recorder;
+  recorder.addEventListener('dataavailable', (event) => {
+    if (!translateState.running || !event.data || !event.data.size) return;
+    submitAudioChunk(event.data);
+  });
+  recorder.start(5000);
+}
+
+function stopTabAudioTranslation() {
+  translateState.running = false;
+  cleanupTranslateCapture();
+  setTranslateButtonState();
+  setTranslateStatus(translateState.backendReady ? '待機中' : '翻譯服務未啟用：請設定 GEMINI_API_KEY');
+}
+
+if (translateToggleBtn) {
+  translateToggleBtn.addEventListener('click', async () => {
+    if (!translateState.backendReady) {
+      setTranslateStatus('翻譯服務未啟用：請設定 GEMINI_API_KEY');
+      return;
+    }
+    if (translateState.running) {
+      stopTabAudioTranslation();
+      return;
+    }
+    try {
+      await startTabAudioTranslation();
+    } catch (err) {
+      console.error('啟動分頁音訊翻譯失敗', err);
+      if (err && err.message === 'tab-audio-missing') {
+        setTranslateStatus('啟動失敗：請在分享視窗勾選分享分頁音訊');
+      } else if (err && err.message === 'browser-display-capture-unsupported') {
+        setTranslateStatus('這個瀏覽器目前不支援分頁音訊擷取');
+      } else if (err && err.message === 'media-recorder-unsupported') {
+        setTranslateStatus('這個瀏覽器目前不支援分頁音訊錄製');
+      } else {
+        setTranslateStatus('無法啟動分頁音訊翻譯');
+      }
+      stopTabAudioTranslation();
+    }
+  });
+}
+
+if (audioTestToggleBtn) {
+  audioTestToggleBtn.addEventListener('click', () => {
+    runAudioInputTest();
+  });
+}
+
+setTranslateButtonState();
+setAudioTestButtonState(false);
+loadTranslateBackendStatus();
 </script>
 </body>
 </html>
